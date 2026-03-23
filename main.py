@@ -334,7 +334,7 @@ def serve_index():
 
 #     print(f"[Upload] Done | success={len(results)} | errors={len(errors)}")
 #     return JSONResponse({"uploaded": results, "errors": errors, "total": len(results)})
-@app.post("/upload")
+@app.post("/workflow/upload")
 async def upload_pdfs(
     background_tasks: BackgroundTasks,
     hbl_attachments: List[UploadFile] = File(default=[]),
@@ -675,7 +675,7 @@ async def run_extraction(txn_id: str, pdf_path: str, filename: str, pdf_type: st
         print(f"[Task][ERROR] Unexpected DB error on done update | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
         print(traceback.format_exc())# ── List files ────────────────────────────────────────────────────────────────
 
-@app.get("/files")
+@app.get("/workflow/files")
 def list_files(status: Optional[str] = None, search: Optional[str] = None):
     print(f"[ListFiles] Request | status={status} | search={search}")
     try:
@@ -871,7 +871,7 @@ def list_files(status: Optional[str] = None, search: Optional[str] = None):
 #         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 # ── Get single record ─────────────────────────────────────────────────────────
 
-@app.get("/files/{txn_id}")
+@app.get("/workflow/files/{txn_id}")
 def get_file(txn_id: str):
     print(f"[GetFile] Request | txn_id={txn_id}")
     try:
@@ -909,7 +909,7 @@ def get_file(txn_id: str):
 
 # ── Download extracted JSON ───────────────────────────────────────────────────
 
-@app.get("/files/{txn_id}/download")
+@app.get("/workflow/files/{txn_id}/download")
 def download_json(txn_id: str):
     print(f"[Download] Request | txn_id={txn_id}")
     try:
@@ -972,7 +972,7 @@ def download_json(txn_id: str):
 
 # ── Delete files ──────────────────────────────────────────────────────────────
 
-@app.delete("/files")
+@app.delete("/workflow/files")
 def delete_files(txn_ids: List[str]):
     print(f"[Delete] Request | txn_ids={txn_ids}")
     deleted = []
@@ -1037,7 +1037,7 @@ def delete_files(txn_ids: List[str]):
 
     return {"deleted": deleted, "errors": errors}
 
-@app.post("/start_creating_jobs")
+@app.post("/workflow/start_creating_jobs")
 async def start_job_creation(background_tasks: BackgroundTasks):
     try:
         with get_db() as conn:
