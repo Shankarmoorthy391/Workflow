@@ -22,7 +22,7 @@ from typing import List, Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, Request, UploadFile, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from helper.helper_funtion import HelperFunctionController
@@ -1038,7 +1038,7 @@ def delete_files(txn_ids: List[str]):
     return {"deleted": deleted, "errors": errors}
 
 @app.post("/workflow/start_creating_jobs")
-async def start_job_creation(background_tasks: BackgroundTasks):
+async def start_job_creation(Request: Request, background_tasks: BackgroundTasks):
     try:
         with get_db() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1051,14 +1051,14 @@ async def start_job_creation(background_tasks: BackgroundTasks):
         if not data:
             return {"message": "No jobs found with status 'done'"}
 
-        background_tasks.add_task(process_jobs, data)
+        background_tasks.add_task(process_jobs, data, Request)
         return {"message": f"{len(data)} jobs queued for creation"}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def process_jobs(data: list):
+async def process_jobs(data: list, Request):
     """Background task: loops through pdf_uploads rows and creates jobs."""
     for row in data:
         mbl_id      = row.get("mbl_id")       # ✅ matches AS mbl_id in query
@@ -1070,7 +1070,7 @@ async def process_jobs(data: list):
         try:
             if api_payload:
                 print(f"[Job] Payload ready | txn_id={txn_id}")
-                await HelperFunctionController.create_job(api_payload)  # ✅ flat dict passed
+                await HelperFunctionController.create_job(Request,api_payload)  # ✅ flat dict passed
 
             # ✅ Mark as job_created
             with get_db() as conn:

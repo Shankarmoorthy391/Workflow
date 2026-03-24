@@ -9,7 +9,7 @@ import json
 class HelperFunctionController:
 
     @staticmethod
-    async def create_job(payload: dict) -> Dict[str, Any]:
+    async def create_job(Request,payload: dict) -> Dict[str, Any]:
         """
         Hits the Job Creation API via POST request.
 
@@ -21,9 +21,10 @@ class HelperFunctionController:
         """
         url = 'http://127.0.0.1:8000/api/job-create/'
           # 🔁 replace with your actual endpoint
+        token = Request.headers.get("Authorization", "").replace("Bearer ", "")  # Extract token from incoming request  
         headers = {
         "Content-Type": "application/json",
-        "Authorization": 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzc0NDE1MDQ2LCJpYXQiOjE3NzM5ODMwNDYsImp0aSI6IjViNTU1OGI5NGIwOTQ4MTZhYTQ1Nzk4MmU0ZTUwYjNhIiwidXNlcl9pZCI6IjE2IiwicHVsc2VfaWQiOiJQMlBFTiIsImJyYW5jaF9pZCI6OX0.FhRfCqIkmgWlHl2F3wegd3mIT6YNJCJtDyP7gxV5ErU'  # 👈 remove if no auth needed
+        "Authorization": f'Bearer {token}'
     }
         print("PAYLOAD TYPE:", type(payload))  # must be <class 'dict'>
         print("PAYLOAD KEYS:", payload.keys())
