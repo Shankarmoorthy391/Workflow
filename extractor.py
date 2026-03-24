@@ -131,22 +131,24 @@ Return ONLY two blocks, no additional prose:
     },
     "origin_code": {
     "type": "string",
-    "description": (
-        "5-character UN/LOCODE for the PORT OF LOADING. "
-        "Always uppercase. First 2 chars = ISO country code, next 3 = port code. "
-        "e.g. 'THLCH' = Thailand Laem Chabang, 'INMAA' = India Chennai. "
-        "If the value in the document looks garbled or mixed-case, reconstruct "
-        "the correct UN/LOCODE from context (port name, country)."
-    ),
+    # "description": (
+    #     "5-character UN/LOCODE for the PORT OF LOADING. "
+    #     "Always uppercase. First 2 chars = ISO country code, next 3 = port code. "
+    #     "e.g. 'THLCH' = Thailand Laem Chabang, 'INMAA' = India Chennai. "
+    #     "If the value in the document looks garbled or mixed-case, reconstruct "
+    #     "the correct UN/LOCODE from context (port name, country)."
+    # ),
+     "description": "origin sea port UN/LOCODE",
     "pattern": "^[A-Z]{2}[A-Z0-9]{3}$",
     "examples": ["THLCH", "INMAA", "USLAX"]
 },
 "destination_code": {
     "type": "string", 
-    "description": (
-        "5-character UN/LOCODE for the PORT OF DISCHARGE. "
-        "Always uppercase. Derive from 'Port of Discharge' or 'Place of Delivery' field."
-    ),
+    # "description": (
+    #     "5-character UN/LOCODE for the PORT OF DISCHARGE. "
+    #     "Always uppercase. Derive from 'Port of Discharge' or 'Place of Delivery' field."
+    # ),
+      "description": "Destination sea port UN/LOCODE",
     "pattern": "^[A-Z]{2}[A-Z0-9]{3}$",
     "examples": ["INMAA", "INVTZ", "INBOM"]
 },
@@ -216,13 +218,13 @@ Return ONLY two blocks, no additional prose:
       "description": "Date of IGM (YYYY-MM-DD)",
       "examples": ["2026-03-18"]
     },
-    "ocean_routings": {
-      "type": "array",
-      "description": "List of ocean/multimodal routing legs",
-      "items": {
-        "$ref": "#/definitions/OceanRouting"
-      }
-    },
+    # "ocean_routings": {
+    #   "type": "array",
+    #   "description": "List of ocean/multimodal routing legs",
+    #   "items": {
+    #     "$ref": "#/definitions/OceanRouting"
+    #   }
+    # },
     "container_details": {
       "type": "array",
       "description": "List of containers in the shipment",
@@ -246,79 +248,81 @@ Return ONLY two blocks, no additional prose:
     }
   },
   "definitions": {
-    "OceanRouting": {
-      "type": "object",
-      "description": "A single routing leg (vessel, rail, truck, etc.)",
-      "required": ["transport_type", "from_port_code", "to_port_code"],
-      "properties": {
-        "id": {
-          "type": "integer",
-          "description": "Unique routing leg identifier",
-          "examples": [671]
-        },
-        "transport_type": {
-          "type": "string",
-          "description": "Mode of transport for this leg",
-          "enum": ["Vessel", "Rail", "Truck", "Air", "Feeder"],
-          "examples": ["Rail"]
-        },
-        "from_port_code": {
-          "type": "string",
-          "description": "Origin port/location code for this leg",
-          "examples": ["USNYC"]
-        },
-        "to_port_code": {
-          "type": "string",
-          "description": "Destination port/location code for this leg",
-          "examples": ["INMAA"]
-        },
-        "carrier_code": {
-          "type": "string",
-          "description": "Carrier or operator for this leg",
-          "examples": ["Multimodel Carrier"]
-        },
-        "vessel": {
-          "type": "string",
-          "description": "Vessel name (if transport_type is Vessel or Feeder)",
-          "examples": ["MAERSK SHIPPING"]
-        },
-        "voyage_number": {
-          "type": "string",
-          "description": "Voyage number (if applicable)",
-          "examples": ["V0017"]
-        },
-        "rail_no": {
-          "type": "string",
-          "description": "Rail train/service number (if transport_type is Rail)",
-          "examples": ["R017"]
-        },
-        "etd": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Estimated departure for this leg",
-          "examples": ["2026-02-01T10:30:00Z"]
-        },
-        "eta": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Estimated arrival for this leg",
-          "examples": ["2026-02-02T14:00:00Z"]
-        },
-        "atd": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Actual departure for this leg",
-          "examples": ["2026-02-03T10:30:00Z"]
-        },
-        "ata": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Actual arrival for this leg",
-          "examples": ["2026-02-04T10:30:00Z"]
-        }
-      },
-      "additionalProperties": False
-    },
+    
+    # "OceanRouting": {
+    #   "type": "object",
+    #   "description": "A single routing leg (vessel, rail, truck, etc.)",
+    #   "required": ["transport_type", "from_port_code", "to_port_code"],
+    #   "properties": {
+    #     "id": {
+    #       "type": "integer",
+    #       "description": "Unique routing leg identifier",
+    #       "examples": [671]
+    #     },
+    #     "transport_type": {
+    #       "type": "string",
+    #       "description": "Mode of transport for this leg",
+    #       "enum": ["SEA", "RAIL", "TRUCK", "AIR"],
+    #       "examples": ["Rail"]
+    #     },
+    #     "from_port_code": {
+    #       "type": "string",
+    #       "description": "Origin port/location code for this leg",
+    #       "examples": ["USNYC"]
+    #     },
+    #     "to_port_code": {
+    #       "type": "string",
+    #       "description": "Destination port/location code for this leg",
+    #       "examples": ["INMAA"]
+    #     },
+    #     "carrier_code": {
+    #       "type": "string",
+    #       "description": "Carrier or operator for this leg",
+    #       "examples": ["Multimodel Carrier"]
+    #     },
+    #     "vessel": {
+    #       "type": "string",
+    #       "description": "Vessel name (if transport_type is Vessel or Feeder)",
+    #       "examples": ["MAERSK SHIPPING"]
+    #     },
+    #     "voyage_number": {
+    #       "type": "string",
+    #       "description": "Voyage number (if applicable)",
+    #       "examples": ["V0017"]
+    #     },
+    #     "rail_no": {
+    #       "type": "string",
+    #       "description": "Rail train/service number (if transport_type is Rail)",
+    #       "examples": ["R017"]
+    #     },
+    #     "etd": {
+    #       "type": "string",
+    #       "format": "date-time",
+    #       "description": "Estimated departure for this leg",
+    #       "examples": ["2026-02-01T10:30:00Z"]
+    #     },
+    #     "eta": {
+    #       "type": "string",
+    #       "format": "date-time",
+    #       "description": "Estimated arrival for this leg",
+    #       "examples": ["2026-02-02T14:00:00Z"]
+    #     },
+    #     "atd": {
+    #       "type": "string",
+    #       "format": "date-time",
+    #       "description": "Actual departure for this leg",
+    #       "examples": ["2026-02-03T10:30:00Z"]
+    #     },
+    #     "ata": {
+    #       "type": "string",
+    #       "format": "date-time",
+    #       "description": "Actual arrival for this leg",
+    #       "examples": ["2026-02-04T10:30:00Z"]
+    #     }
+    #   },
+    #   "additionalProperties": False
+    # },
+    
     "ContainerDetail": {
       "type": "object",
       "description": "Details of an individual container",
@@ -486,12 +490,12 @@ Return ONLY two blocks, no additional prose:
         },
         "origin_code": {
           "type": "string",
-          "description": "Origin port IATA or UN/LOCODE",
-          "examples": ["INBOM"]
+          "description": "Origin sea port  UN/LOCODE",
+          "examples": ["INMAA"]
         },
         "destination_code": {
           "type": "string",
-          "description": "Destination port IATA or UN/LOCODE",
+          "description": "Destination sea port UN/LOCODE",
           "examples": ["INMAA"]
         },
         "trade": {
