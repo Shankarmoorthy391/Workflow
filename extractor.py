@@ -124,11 +124,11 @@ Return ONLY two blocks, no additional prose:
       "description": "Direction of the shipment",
       "examples": ["Import"]
     },
-    "agent": {
-      "type": "string",
-      "description": "Agent customer code",
-      "examples": ["CUST30756"]
-    },
+   "agent": {
+  "type": "string",
+  "description": "The name of the agent as extracted from the Shipper section (Field 1) of the Master Bill of Lading (MBL). Represents the shipping agent or freight forwarder acting on behalf of the exporter.",
+  "examples": ["Ningbo Bestrader Import And Export Co., Ltd"]
+},
     "origin_code": {
     "type": "string",
     # "description": (
