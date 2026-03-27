@@ -1,22 +1,16 @@
 """
 extractor.py
 ------------
-Async, class-based HBL PDF/Image extraction using Claude AI.
+Async, class-based HBL PDF extraction using Claude AI.
 All errors are printed to stdout with context.
-
-Supported file types:
-    - PDF  (.pdf)
-    - Images (.jpg, .jpeg, .png, .gif, .webp, .bmp, .tiff, .tif, .svg)
 
 Usage (standalone CLI):
     python extractor.py "path/to/file.pdf"
-    python extractor.py "path/to/file.jpg"
 
 Usage (import):
     from extractor import HBLExtractor
     extractor = HBLExtractor()
-    result    = await extractor.extract("path/to/file.pdf", "mbl")
-    result    = await extractor.extract("path/to/file.jpg", "hbl")
+    result    = await extractor.extract("path/to/file.pdf")
 """
 
 import os
@@ -33,34 +27,6 @@ import pdfplumber
 
 from dotenv import load_dotenv
 load_dotenv()
-
-# ---------------------------------------------------------------------------
-# Supported file types
-# ---------------------------------------------------------------------------
-
-PDF_EXTENSIONS = {".pdf"}
-
-IMAGE_EXTENSIONS = {
-    ".jpg", ".jpeg", ".png", ".gif",
-    ".webp", ".bmp", ".tiff", ".tif", ".svg",
-}
-
-# Maps file extension → Anthropic media_type string
-IMAGE_MEDIA_TYPES = {
-    ".jpg":  "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png":  "image/png",
-    ".gif":  "image/gif",
-    ".webp": "image/webp",
-    ".bmp":  "image/bmp",
-    ".tiff": "image/tiff",
-    ".tif":  "image/tiff",
-    ".svg":  "image/svg+xml",
-}
-
-ALL_SUPPORTED_EXTENSIONS = PDF_EXTENSIONS | IMAGE_EXTENSIONS
-
-
 # ---------------------------------------------------------------------------
 # Custom Exceptions
 # ---------------------------------------------------------------------------
@@ -71,7 +37,7 @@ class ExtractionError(Exception):
 
 
 class PDFReadError(Exception):
-    """Raised when PDF/image cannot be read."""
+    """Raised when PDF cannot be read."""
     pass
 
 
@@ -358,11 +324,11 @@ Return ONLY one blocks, no additional prose:
       "description": "Details of an individual container",
       "required": ["container_type_input", "container_no"],
       "properties": {
-        # "id": {
-        #   "type": "integer",
-        #   "description": "Unique container record identifier",
-        #   "examples": [259]
-        # },
+        "id": {
+          "type": "integer",
+          "description": "Unique container record identifier",
+          "examples": [259]
+        },
         "container_type_input": {
           "type": "string",
           "description": "Container ISO size/type code",
@@ -484,19 +450,18 @@ Return ONLY one blocks, no additional prose:
       "type": "object",
       "description": "Individual cargo package detail within an HBL",
       "required": [
-          "container_no",
-         "no_of_packages",
+        "no_of_packages",
         "gross_weight",
         "volume",
         "chargeable_weight",
         "haz"
       ],
       "properties": {
-        # "id": {
-        #   "type": "integer",
-        #   "description": "Unique cargo detail record identifier",
-        #   "examples": [656]
-        # },
+        "id": {
+          "type": "integer",
+          "description": "Unique cargo detail record identifier",
+          "examples": [656]
+        },
         "container_no": {
           "type": "string",
           "description": "Container number this cargo belongs to",
@@ -894,14 +859,15 @@ Return ONLY one blocks, no additional prose:
             "$ref": "#/definitions/MblCharge"
           }
         },
-        "events": {
-          "type": "array",
-          "description": "Shipment milestone events for this HBL",
-          "items": {
-            "$ref": "#/definitions/ShipmentEvent"
-          }
-        }
+        # "events": {
+        #   "type": "array",
+        #   "description": "Shipment milestone events for this HBL",
+        #   "items": {
+        #     "$ref": "#/definitions/ShipmentEvent"
+        #   }
+        # }
       },
+
       "additionalProperties": False
     },
 
@@ -911,7 +877,6 @@ Return ONLY one blocks, no additional prose:
   }
 }
 
-   
     # -------------------------------------------------------------------------
     # Constructor
     # -------------------------------------------------------------------------
@@ -936,14 +901,14 @@ Return ONLY one blocks, no additional prose:
     # Public API
     # -------------------------------------------------------------------------
 
-    async def extract(self, file_path: str, schema_type: str) -> dict:
+    async def extract(self, pdf_path: str, schema_type) -> dict:
         """
-        Full async extraction pipeline for one PDF or image file.
+        Full async extraction pipeline for one PDF.
 
         Returns:
         {
             "success":        bool,
-            "pdf_type":       "digital" | "scanned" | "image",
+            "pdf_type":       "digital" | "scanned",
             "extracted_data": { ...HBL JSON... } | None,
             "diff_summary":   str | None,
             "input_tokens":   int,
@@ -952,17 +917,17 @@ Return ONLY one blocks, no additional prose:
             "error":          str | None
         }
         """
-        print(f"[HBLExtractor] Starting extraction | schema_type={schema_type} | file={file_path}")
+        print(f"[HBLExtractor] Starting extraction | schema_type={schema_type} | file={pdf_path}")
         result = self._empty_result()
 
         try:
-            # Step 1 — validate file (PDF or image)
-            self._validate_file(file_path)
+            # Step 1 — validate file
+            self._validate_file(pdf_path)
 
-            # Step 2 — detect file type and build prompt
-            pdf_type, system_prompt, messages = await self._prepare_prompt(file_path, schema_type)
+            # Step 2 — detect PDF type and build prompt
+            pdf_type, system_prompt, messages = await self._prepare_prompt(pdf_path, schema_type)
             result["pdf_type"] = pdf_type
-            print(f"[HBLExtractor] File type detected | type={pdf_type} | file={file_path}")
+            print(f"[HBLExtractor] PDF type detected | type={pdf_type} | file={pdf_path}")
 
             # Step 3 — call Claude
             raw, input_tokens, output_tokens = await self._call_claude(system_prompt, messages)
@@ -976,156 +941,118 @@ Return ONLY one blocks, no additional prose:
             result["extracted_data"] = extracted_data
             result["diff_summary"]   = diff_summary
             result["success"]        = True
-            print(f"[HBLExtractor] Extraction successful | file={file_path}")
+            print(f"[HBLExtractor] Extraction successful | file={pdf_path}")
 
         except PDFReadError as e:
             result["error"] = f"PDFReadError: {str(e)}"
-            print(f"[HBLExtractor][ERROR] PDFReadError | file={file_path} | reason={str(e)}")
+            print(f"[HBLExtractor][ERROR] PDFReadError | file={pdf_path} | reason={str(e)}")
             print(traceback.format_exc())
 
         except ExtractionError as e:
             result["error"] = f"ExtractionError: {str(e)}"
-            print(f"[HBLExtractor][ERROR] ExtractionError | file={file_path} | reason={str(e)}")
+            print(f"[HBLExtractor][ERROR] ExtractionError | file={pdf_path} | reason={str(e)}")
             print(traceback.format_exc())
 
         except ParseError as e:
             result["error"] = f"ParseError: {str(e)}"
-            print(f"[HBLExtractor][ERROR] ParseError | file={file_path} | reason={str(e)}")
+            print(f"[HBLExtractor][ERROR] ParseError | file={pdf_path} | reason={str(e)}")
             print(traceback.format_exc())
 
         except anthropic.APIConnectionError as e:
             result["error"] = f"APIConnectionError: Could not reach Anthropic API — {str(e)}"
-            print(f"[HBLExtractor][ERROR] APIConnectionError | file={file_path} | reason={str(e)}")
+            print(f"[HBLExtractor][ERROR] APIConnectionError | file={pdf_path} | reason={str(e)}")
             print(traceback.format_exc())
 
         except anthropic.AuthenticationError as e:
             result["error"] = f"AuthenticationError: Invalid API key — {str(e)}"
-            print(f"[HBLExtractor][ERROR] AuthenticationError | file={file_path} | reason={str(e)}")
+            print(f"[HBLExtractor][ERROR] AuthenticationError | file={pdf_path} | reason={str(e)}")
             print(traceback.format_exc())
 
         except anthropic.RateLimitError as e:
             result["error"] = f"RateLimitError: Too many requests — {str(e)}"
-            print(f"[HBLExtractor][ERROR] RateLimitError | file={file_path} | reason={str(e)}")
+            print(f"[HBLExtractor][ERROR] RateLimitError | file={pdf_path} | reason={str(e)}")
             print(traceback.format_exc())
 
         except anthropic.APIStatusError as e:
             result["error"] = f"APIStatusError [{e.status_code}]: {str(e)}"
-            print(f"[HBLExtractor][ERROR] APIStatusError | status_code={e.status_code} | file={file_path} | reason={str(e)}")
+            print(f"[HBLExtractor][ERROR] APIStatusError | status_code={e.status_code} | file={pdf_path} | reason={str(e)}")
             print(traceback.format_exc())
 
         except json.JSONDecodeError as e:
             result["error"] = f"JSONDecodeError: {str(e)}"
-            print(f"[HBLExtractor][ERROR] JSONDecodeError | file={file_path} | reason={str(e)}")
+            print(f"[HBLExtractor][ERROR] JSONDecodeError | file={pdf_path} | reason={str(e)}")
             print(traceback.format_exc())
 
         except Exception as e:
             result["error"] = f"UnexpectedError: {type(e).__name__}: {str(e)}\n\n{traceback.format_exc()}"
-            print(f"[HBLExtractor][ERROR] UnexpectedError | type={type(e).__name__} | file={file_path} | reason={str(e)}")
+            print(f"[HBLExtractor][ERROR] UnexpectedError | type={type(e).__name__} | file={pdf_path} | reason={str(e)}")
             print(traceback.format_exc())
 
         return result
 
-    async def get_page_count(self, file_path: str) -> int:
-        """
-        Return number of pages in a PDF, or 1 for image files.
-        Returns 0 on any error.
-        """
+    async def get_page_count(self, pdf_path: str) -> int:
+        """Return number of pages in a PDF. Returns 0 on any error."""
         try:
-            ext = Path(file_path).suffix.lower()
-            if ext in IMAGE_EXTENSIONS:
-                print(f"[HBLExtractor] Page count | file={file_path} | pages=1 (image)")
-                return 1
-            loop  = asyncio.get_event_loop()
-            count = await loop.run_in_executor(None, self._read_page_count, file_path)
-            print(f"[HBLExtractor] Page count | file={file_path} | pages={count}")
+            loop = asyncio.get_event_loop()
+            count = await loop.run_in_executor(None, self._read_page_count, pdf_path)
+            print(f"[HBLExtractor] Page count | file={pdf_path} | pages={count}")
             return count
         except Exception as e:
-            print(f"[HBLExtractor][ERROR] get_page_count failed | file={file_path} | reason={str(e)}")
+            print(f"[HBLExtractor][ERROR] get_page_count failed | file={pdf_path} | reason={str(e)}")
             return 0
 
     # -------------------------------------------------------------------------
-    # Step 1 — Validate file  (PDF or image)
+    # Step 1 — Validate file
     # -------------------------------------------------------------------------
 
-    def _validate_file(self, file_path: str):
-        """
-        Validate that the file exists and has a supported extension.
-        Supports: .pdf, .jpg, .jpeg, .png, .gif, .webp, .bmp, .tiff, .tif, .svg
-        """
-        path = Path(file_path)
+    def _validate_file(self, pdf_path: str):
+        """Validate that the file exists and is a PDF."""
+        path = Path(pdf_path)
         if not path.exists():
-            raise PDFReadError(f"File not found: {file_path}")
+            raise PDFReadError(f"File not found: {pdf_path}")
         if not path.is_file():
-            raise PDFReadError(f"Path is not a file: {file_path}")
-
-        ext = path.suffix.lower()
-        if ext not in ALL_SUPPORTED_EXTENSIONS:
-            supported = ", ".join(sorted(ALL_SUPPORTED_EXTENSIONS))
-            raise PDFReadError(
-                f"Unsupported file type '{ext}' for: {file_path}. "
-                f"Supported types: {supported}"
-            )
-        print(f"[HBLExtractor] File validated | ext={ext} | file={file_path}")
+            raise PDFReadError(f"Path is not a file: {pdf_path}")
+        if path.suffix.lower() != ".pdf":
+            raise PDFReadError(f"File is not a PDF: {pdf_path}")
+        print(f"[HBLExtractor] File validated | file={pdf_path}")
 
     # -------------------------------------------------------------------------
-    # Step 2 — Detect file type + build prompt
+    # Step 2 — Detect PDF type + build prompt
     # -------------------------------------------------------------------------
 
-    async def _prepare_prompt(self, file_path: str, schema_type: str) -> tuple:
+    async def _prepare_prompt(self, pdf_path: str, schema_type: str) -> tuple:
         """
-        Route to the correct prompt builder based on file type:
-          - Image file  → vision prompt (send image directly)
-          - PDF digital → text prompt
-          - PDF scanned → vision prompt (render pages to PNG first)
-
-        Returns (file_type_label, system_prompt, messages).
+        Detect whether PDF is digital or scanned, then build the appropriate prompt.
+        Returns (pdf_type, system_prompt, messages).
         """
-        ext = Path(file_path).suffix.lower()
-        print(f"[HBLExtractor] Reviewing schema | schema_type={schema_type} | file={file_path}")
-
-        # ── Branch A: image file (not a PDF) ──────────────────────────────────
-        if ext in IMAGE_EXTENSIONS:
-            print(f"[HBLExtractor] Image file detected — reading directly | file={file_path}")
-            try:
-                loop     = asyncio.get_event_loop()
-                messages = await loop.run_in_executor(
-                    None, self._build_image_file_messages, file_path, schema_type
-                )
-            except Exception as e:
-                print(f"[HBLExtractor][ERROR] Image read failed | file={file_path} | reason={str(e)}")
-                print(traceback.format_exc())
-                raise PDFReadError(f"Failed to read image file: {str(e)}") from e
-            return "image", self.SYSTEM_PROMPT, messages
-
-        # ── Branch B: PDF ──────────────────────────────────────────────────────
         try:
+            print(f"[HBLExtractor] reviewing schema | schema_type={schema_type} | file={pdf_path}")
             loop     = asyncio.get_event_loop()
-            pdf_text = await loop.run_in_executor(None, self._extract_text, file_path)
-            print(f"[HBLExtractor] Text extracted | chars={len(pdf_text.strip())} | file={file_path}")
+            pdf_text = await loop.run_in_executor(None, self._extract_text, pdf_path)
+            print(f"[HBLExtractor] Text extracted | chars={len(pdf_text.strip())} | file={pdf_path}")
         except Exception as e:
-            print(f"[HBLExtractor][ERROR] Text extraction failed | file={file_path} | reason={str(e)}")
+            print(f"[HBLExtractor][ERROR] Text extraction failed | file={pdf_path} | reason={str(e)}")
             print(traceback.format_exc())
             raise PDFReadError(f"Failed to read PDF text: {str(e)}") from e
 
         if len(pdf_text.strip()) >= self.scanned_threshold:
-            # Digital PDF — use text prompt
-            print(f"[HBLExtractor] Building text prompt | file={file_path}")
+            print(f"[HBLExtractor] Building text prompt | file={pdf_path}")
             return "digital", self.SYSTEM_PROMPT, self._build_text_messages(pdf_text, schema_type)
         else:
-            # Scanned PDF — render pages to images
-            print(f"[HBLExtractor] Scanned PDF detected — converting pages to images | file={file_path}")
+            print(f"[HBLExtractor] Scanned PDF detected — converting pages to images | file={pdf_path}")
             try:
-                images_b64 = await loop.run_in_executor(None, self._pdf_to_images_b64, file_path)
-                print(f"[HBLExtractor] Pages converted to images | count={len(images_b64)} | file={file_path}")
+                loop       = asyncio.get_event_loop()
+                images_b64 = await loop.run_in_executor(None, self._pdf_to_images_b64, pdf_path)
+                print(f"[HBLExtractor] Pages converted to images | count={len(images_b64)} | file={pdf_path}")
             except Exception as e:
-                print(f"[HBLExtractor][ERROR] Image conversion failed | file={file_path} | reason={str(e)}")
+                print(f"[HBLExtractor][ERROR] Image conversion failed | file={pdf_path} | reason={str(e)}")
                 print(traceback.format_exc())
                 raise PDFReadError(f"Failed to convert scanned PDF to images: {str(e)}") from e
 
             if not images_b64:
                 raise PDFReadError("No pages could be rendered from the scanned PDF.")
 
-            print(f"[HBLExtractor] Building vision prompt | file={file_path}")
+            print(f"[HBLExtractor] Building vision prompt | file={pdf_path}")
             return "scanned", self.SYSTEM_PROMPT, self._build_vision_messages(images_b64, schema_type)
 
     # -------------------------------------------------------------------------
@@ -1151,6 +1078,7 @@ Return ONLY one blocks, no additional prose:
             anthropic.RateLimitError,
             anthropic.APIStatusError
         ):
+            # Re-raise Anthropic-specific errors to be handled in extract()
             raise
 
         except Exception as e:
@@ -1209,19 +1137,15 @@ Return ONLY one blocks, no additional prose:
     # Prompt builders
     # -------------------------------------------------------------------------
 
-    def _get_schema_str(self, schema_type: str) -> str:
-        """Return the JSON schema string for the given schema_type."""
+    def _build_text_messages(self, pdf_text: str, schema_type: str) -> list:
+        print(f"[HBLExtractor] Building text messages | schema_type={schema_type}")
         if schema_type == "hbl":
-            return json.dumps(self.SCHEMA_HBL, indent=2)
+            schema_str = json.dumps(self.SCHEMA_HBL, indent=2)
         elif schema_type == "mbl":
-            return json.dumps(self.SCHEMA_MBL, indent=2)
+            schema_str = json.dumps(self.SCHEMA_MBL, indent=2)
         else:
             raise ValueError(f"Unsupported schema type: {schema_type}")
 
-    def _build_text_messages(self, pdf_text: str, schema_type: str) -> list:
-        """Build prompt messages for a digital (text) PDF."""
-        print(f"[HBLExtractor] Building text messages | schema_type={schema_type}")
-        schema_str = self._get_schema_str(schema_type)
         return [{
             "role": "user",
             "content": (
@@ -1232,10 +1156,14 @@ Return ONLY one blocks, no additional prose:
             )
         }]
 
-    def _build_vision_messages(self, images_b64: list, schema_type: str) -> list:
-        """Build prompt messages for a scanned PDF (list of base64 PNG pages)."""
-        print(f"[HBLExtractor] Building vision messages | schema_type={schema_type} | pages={len(images_b64)}")
-        schema_str = self._get_schema_str(schema_type)
+    def _build_vision_messages(self, images_b64: list,schema_type: str) -> list:
+        if schema_type == "hbl":
+            schema_str = json.dumps(self.SCHEMA_HBL, indent=2)
+        elif schema_type == "mbl":
+            schema_str = json.dumps(self.SCHEMA_MBL, indent=2)
+        else:
+            raise ValueError(f"Unsupported schema type: {schema_type}")
+
         content    = []
         for img_b64 in images_b64:
             content.append({
@@ -1251,45 +1179,6 @@ Return ONLY one blocks, no additional prose:
             )
         })
         return [{"role": "user", "content": content}]
-
-    def _build_image_file_messages(self, file_path: str, schema_type: str) -> list:
-        """
-        Build prompt messages for a standalone image file
-        (jpg, jpeg, png, gif, webp, bmp, tiff, tif, svg).
-        Reads the file from disk and base64-encodes it.
-        """
-        print(f"[HBLExtractor] Building image file messages | schema_type={schema_type} | file={file_path}")
-        schema_str = self._get_schema_str(schema_type)
-        ext        = Path(file_path).suffix.lower()
-        media_type = IMAGE_MEDIA_TYPES.get(ext, "image/jpeg")
-
-        with open(file_path, "rb") as f:
-            img_b64 = base64.standard_b64encode(f.read()).decode("utf-8")
-
-        print(f"[HBLExtractor] Image encoded | media_type={media_type} | file={file_path}")
-
-        return [{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type":       "base64",
-                        "media_type": media_type,
-                        "data":       img_b64,
-                    }
-                },
-                {
-                    "type": "text",
-                    "text": (
-                        "Read this document image carefully — all text, stamps, tables, "
-                        "handwritten annotations.\n"
-                        "Extract all information and return a schema-conformant JSON object.\n\n"
-                        f"--- BEGIN JSON SCHEMA ---\n{schema_str}\n--- END JSON SCHEMA ---"
-                    )
-                }
-            ]
-        }]
 
     # -------------------------------------------------------------------------
     # Sync helpers (run in executor to keep async loop unblocked)
@@ -1314,36 +1203,36 @@ Return ONLY one blocks, no additional prose:
             raise PDFReadError(f"pdfplumber failed to open PDF: {str(e)}") from e
 
     def _pdf_to_images_b64(self, pdf_path: str) -> list:
-        """Convert each PDF page to base64 PNG using pymupdf (sync)."""
-        try:
-            import fitz
-        except ImportError as e:
-            print(f"[HBLExtractor][ERROR] pymupdf not installed | reason={str(e)}")
-            raise PDFReadError("pymupdf is not installed. Run: uv add pymupdf") from e
+     """Convert each PDF page to base64 PNG using pymupdf (sync)."""
+     try:
+        import fitz
+     except ImportError as e:
+        print(f"[HBLExtractor][ERROR] pymupdf not installed | reason={str(e)}")
+        raise PDFReadError("pymupdf is not installed. Run: uv add pymupdf") from e
 
-        try:
-            zoom       = self.dpi / 72
-            mat        = fitz.Matrix(zoom, zoom)
-            images_b64 = []
-            doc        = fitz.open(pdf_path)
+     try:
+        zoom       = self.dpi / 72
+        mat        = fitz.Matrix(zoom, zoom)
+        images_b64 = []
+        doc        = fitz.open(pdf_path)
 
-            for page_num, page in enumerate(doc):
-                try:
-                    pix = page.get_pixmap(matrix=mat)
-                    images_b64.append(
-                        base64.standard_b64encode(pix.tobytes("png")).decode("utf-8")
-                    )
-                    print(f"[HBLExtractor] Page {page_num} rendered | file={pdf_path}")
-                except Exception as page_err:
-                    print(f"[HBLExtractor][WARN] Could not render page {page_num} | reason={str(page_err)}")
+        for page_num, page in enumerate(doc):
+            try:
+                pix = page.get_pixmap(matrix=mat)
+                images_b64.append(
+                    base64.standard_b64encode(pix.tobytes("png")).decode("utf-8")
+                )
+                print(f"[HBLExtractor] Page {page_num} rendered | file={pdf_path}")
+            except Exception as page_err:
+                print(f"[HBLExtractor][WARN] Could not render page {page_num} | reason={str(page_err)}")
 
-            doc.close()
-            return images_b64
+        doc.close()
+        return images_b64
 
-        except Exception as e:
-            print(f"[HBLExtractor][ERROR] pymupdf failed to render PDF | file={pdf_path} | reason={str(e)}")
-            print(traceback.format_exc())
-            raise PDFReadError(f"pymupdf failed to render PDF: {str(e)}") from e
+     except Exception as e:
+        print(f"[HBLExtractor][ERROR] pymupdf failed to render PDF | file={pdf_path} | reason={str(e)}")
+        print(traceback.format_exc())
+        raise PDFReadError(f"pymupdf failed to render PDF: {str(e)}") from e
 
     def _read_page_count(self, pdf_path: str) -> int:
         """Return page count (sync)."""
@@ -1376,3 +1265,5 @@ Return ONLY one blocks, no additional prose:
             "cost_usd":       0.0,
             "error":          None,
         }
+
+

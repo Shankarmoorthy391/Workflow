@@ -26,4 +26,7 @@ dependencies = [
     "six>=1.17.0",
     "tzdata>=2025.3",
     "urllib3>=2.6.3",
+    "sqlalchemy>=2.0.48",
+    "pydantic-settings>=2.13.1",
+    "asyncpg>=0.31.0",
 ]

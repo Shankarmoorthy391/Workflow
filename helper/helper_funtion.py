@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from dotenv import load_dotenv
 load_dotenv()
 import json
+from Config.database import get_async_db
 
 class HelperFunctionController:
 
@@ -19,7 +20,8 @@ class HelperFunctionController:
         Returns:
             Response data from the API.
         """
-        url = 'http://127.0.0.1:8000/api/job-create/'
+        url = f"{os.getenv('BASE_URL')}/api/job-create/"
+        print(f"API URL: {url}")
           # 🔁 replace with your actual endpoint
         token = Request.headers.get("Authorization", "").replace("Bearer ", "")  # Extract token from incoming request  
         headers = {
@@ -50,3 +52,24 @@ class HelperFunctionController:
         except Exception as e:
             print(f"Unexpected error during job creation: {e}")
             raise HTTPException(status_code=500, detail=str(e))
+        
+    @staticmethod
+    async def search_from_db(table: str, column: str, where_col: str, where_val: str):
+     """
+    Search a single column from any table with a case-insensitive WHERE condition.
+
+    :param table:       Table name to query
+    :param column:      Column to select
+    :param where_col:   Column name for WHERE condition
+    :param where_val:   Value to match (case-insensitive)
+    :return:            List of matching values
+    """
+     try:
+        async with get_async_db() as connection:
+            query = f"SELECT {column} FROM {table} WHERE LOWER({where_col}) = LOWER($1)"
+            rows = await connection.fetch(query, where_val)
+            return [row[0] for row in rows]
+
+     except Exception as e:
+        raise Exception(f"Database query failed: {str(e)}")
+    
