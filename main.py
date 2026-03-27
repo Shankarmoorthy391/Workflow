@@ -211,8 +211,8 @@ async def run_extraction(txn_id: str, pdf_path: str, filename: str, pdf_type: st
                         status         = 'done',
                         extracted_data = %s,
                         processed_at   = NOW()
-                    WHERE txn_id = %s AND file_type = %s
-                """, (result["pdf_type"], json.dumps(stored_json), txn_id, pdf_type))
+                    WHERE txn_id = %s AND file_type = %s and filename = %s
+                """, (result["pdf_type"], json.dumps(stored_json), txn_id, pdf_type,filename))
             conn.commit()
         print(f"[Task] Status set to done | txn_id={txn_id} | pdf_type={pdf_type} | cost_usd={result['cost_usd']}")
     except psycopg2.Error as e:
