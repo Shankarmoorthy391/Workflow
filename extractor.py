@@ -20,6 +20,7 @@ Usage (import):
 """
 
 import os
+import string
 import sys
 import json
 import base64
@@ -110,6 +111,9 @@ STRICT RULES
 7. phone/email with multiple values → JSON array of strings.
 8. Dates → preserve exactly as printed.
 9. Weights and volumes → always numbers, never strings.
+10. Emails → Remove all spaces, preserve original casing, validate format (must contain
+    exactly one '@' and a domain with '.'); if invalid after cleaning, output null.
+
 
 VALIDATION CHECKS
 -----------------
@@ -136,7 +140,11 @@ Return ONLY one blocks, no additional prose:
     "service_type",
     "agent",
     "origin_code",
-    "destination_code"
+    "destination_code",
+    "origin_port_name",
+    "destination_port_name",
+    "carrier_name",
+      "carrier_code"
   ],
   "properties": {
     "id": {
@@ -149,6 +157,11 @@ Return ONLY one blocks, no additional prose:
       "description": "Service type (FCL, LCL, AIR, etc.)",
       "examples": ["FCL", "LCL"]
     },
+   "carrier_code": {
+    "type": "string",
+    "description": "First 4 characters of the carrier name in uppercase (e.g., 'Maersk Line' → 'MAER').",
+    "examples": ["MMTU"]
+},
     "service_type": {
       "type": "string",
       "description": "Direction of the shipment",
@@ -158,6 +171,11 @@ Return ONLY one blocks, no additional prose:
   "type": "string",
   "description": "The name of the agent as extracted from the Shipper section (Field 1) of the Master Bill of Lading (MBL). Represents the shipping agent or freight forwarder acting on behalf of the exporter.",
   "examples": ["Ningbo Bestrader Import And Export Co., Ltd"]
+},
+"origin_port_name": {
+    "type": "string",
+    "description": "Name of the origin port",
+    "examples": ["Laem Chabang", "Chennai"]
 },
     "origin_code": {
     "type": "string",
@@ -172,6 +190,17 @@ Return ONLY one blocks, no additional prose:
     "pattern": "^[A-Z]{2}[A-Z0-9]{3}$",
     "examples": ["THLCH", "INMAA", "USLAX"]
 },
+"destination_port_name": {
+    "type": "string",
+    "description": "Name of the destination port",
+    "examples": ["Chennai", "Singapore"]
+},
+"carrier_name": {
+    "type": "string",
+    "description": "Name of the carrier/shipping line",
+    "examples": ["Maersk Shipping", "Mediterranean Shipping Company","T.S. LINES (INDIA) PRIVATE LIMITED"]
+},
+
 "destination_code": {
     "type": "string", 
     # "description": (
@@ -706,9 +735,13 @@ Return ONLY one blocks, no additional prose:
       "required": [
         "hbl_number",
         "origin_code",
+        "origin_port_name",
         "destination_code",
+        "destination_port_name",
+     
         "trade",
         "routed",
+
         # "routed_by",
         # "customer_service",
         "agent_name",
@@ -744,6 +777,17 @@ Return ONLY one blocks, no additional prose:
           "description": "Origin sea port  UN/LOCODE",
           "examples": ["INMAA"]
         },
+        "origin_port_name": {
+          "type": "string",
+          "description": "Name of the origin port",
+          "examples": ["Laem Chabang", "Chennai"]
+        },
+       "destination_port_name": {
+          "type": "string",
+          "description": "Name of the destination port",
+          "examples": ["Chennai", "Singapore"]
+        },
+
         "destination_code": {
           "type": "string",
           "description": "Destination sea port UN/LOCODE",
@@ -894,13 +938,13 @@ Return ONLY one blocks, no additional prose:
             "$ref": "#/definitions/MblCharge"
           }
         },
-        "events": {
-          "type": "array",
-          "description": "Shipment milestone events for this HBL",
-          "items": {
-            "$ref": "#/definitions/ShipmentEvent"
-          }
-        }
+        # "events": {
+        #   "type": "array",
+        #   "description": "Shipment milestone events for this HBL",
+        #   "items": {
+        #     "$ref": "#/definitions/ShipmentEvent"
+        #   }
+        # }
       },
       "additionalProperties": False
     },

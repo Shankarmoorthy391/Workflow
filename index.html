@@ -232,6 +232,7 @@
     .fval{font-size:0.78rem;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:5px 10px;min-height:30px;word-break:break-word;line-height:1.45;}
     .fval.mono{font-family:var(--mono);font-size:0.7rem;color:var(--cyan);}
     .fval.mt{color:var(--muted);opacity:0.45;font-style:italic;}
+    .fval.invalid{border-color:#fca5a5;background:#fef2f2;color:#991b1b;font-weight:600;}
     /* Housing */
     .hlist{display:flex;flex-direction:column;gap:14px;}
     .hcard{border:1px solid var(--border);border-radius:9px;overflow:hidden;}
@@ -324,6 +325,7 @@
           <th onclick="sortBy('bl_number')">BL Number ↕</th>
           <th onclick="sortBy('shipper_name')">Shipper</th>
           <th onclick="sortBy('port_of_loading')">Route</th>
+          <th onclick="sortBy('carrier_code')">Carrier</th>
           <th onclick="sortBy('status')">Status ↕</th>
           <th onclick="sortBy('file_type')">File Type ↕</th>
           <th>PDF Type</th>
@@ -529,6 +531,7 @@ function renderTable(){
       <td class="td-bl">${f.bl_number||'—'}</td>
       <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${f.shipper_name||''}">${f.shipper_name||'—'}</td>
       <td class="td-port">${f.port_of_loading?`<span>${f.port_of_loading}</span><span class="arrow">→</span><span>${f.port_of_discharge||'—'}</span>`:'—'}</td>
+      <td style="font-family:var(--mono);font-size:0.7rem">${f.carrier_code?`<span style="${f.carrier_name?'color:var(--cyan)':'color:var(--red);font-weight:600'}" title="${f.carrier_name||'Unresolved carrier'}">${f.carrier_code}</span>`:'—'}</td>
       <td><span class="badge badge-${f.status}">${f.status}</span></td>
       <td><span class="file-type-tag ${ftClass}">${f.file_type||'—'}</span></td>
       <td><span class="pdf-type-tag">${f.pdf_type||'—'}</span></td>
@@ -747,13 +750,15 @@ function fv(v){
   if(Array.isArray(v))return v.length?v.join(', '):null;
   return String(v);
 }
-function ff(label,val,cls=''){
+function ff(label,val,cls='',inv=false){
   const v=fv(val);
-  return `<div class="ff"><label>${label}</label><div class="fval ${v?cls:'mt'}">${v||'—'}</div></div>`;
+  const sc=!v?'mt':inv?'invalid':cls;
+  return `<div class="ff"><label>${label}</label><div class="fval ${sc}">${v||'—'}</div></div>`;
 }
-function ffs(label,val,span,cls=''){
+function ffs(label,val,span,cls='',inv=false){
   const v=fv(val);
-  return `<div class="ff s${span}"><label>${label}</label><div class="fval ${v?cls:'mt'}">${v||'—'}</div></div>`;
+  const sc=!v?'mt':inv?'invalid':cls;
+  return `<div class="ff s${span}"><label>${label}</label><div class="fval ${sc}">${v||'—'}</div></div>`;
 }
 function sec(icon,title,inner){
   return `<div class="fsec"><div class="fsec-title"><span>${icon}</span>${title}</div>${inner}</div>`;
@@ -790,8 +795,8 @@ function renderPayloadForm(p){
       ${ff('Port of Discharge',p.port_of_discharge)}
       ${ff('Place of Receipt',p.place_of_receipt)}
       ${ff('Place of Delivery',p.place_of_delivery)}
-      ${ff('Origin Code',p.origin_code,'mono')}
-      ${ff('Destination Code',p.destination_code,'mono')}
+      ${ff('Origin Code',p.origin_code,'mono',!!p.port_of_loading&&!p.origin_code)}
+      ${ff('Destination Code',p.destination_code,'mono',!!p.port_of_discharge&&!p.destination_code)}
       ${ff('Freight Payable At',p.freight_payable_at)}
       ${ff('Export Reference',p.export_reference,'mono')}
     </div>
@@ -810,7 +815,8 @@ function renderPayloadForm(p){
     <div class="fgrid c4">
       ${ff('Vessel Name',p.vessel_name)}
       ${ff('Voyage Number',p.voyage_number,'mono')}
-      ${ff('Carrier Code',p.carrier_code)}
+      ${ff('Carrier Code',p.carrier_code,'mono',!!p.carrier_code&&!p.carrier_name)}
+      ${ff('Carrier Name',p.carrier_name)}
       ${ff('Agent',p.agent)}
       ${ff('Date of Issue',p.date_of_issue)}
       ${ff('Shipped On Board Date',p.shipped_on_board_date)}

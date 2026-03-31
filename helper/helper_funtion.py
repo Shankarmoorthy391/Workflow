@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from dotenv import load_dotenv
 load_dotenv()
 import json
+from sqlalchemy import text
 from Config.database import get_async_db
 
 class HelperFunctionController:
@@ -54,21 +55,34 @@ class HelperFunctionController:
             raise HTTPException(status_code=500, detail=str(e))
         
     @staticmethod
-    async def search_from_db(table: str, column: str, where_col: str, where_val: str):
+    async def search_from_db(table: str, column: str, where_col: str, where_val: str, or_conditions: list = None):
      """
     Search a single column from any table with a case-insensitive WHERE condition.
+    Supports additional dynamic OR conditions.
 
-    :param table:       Table name to query
-    :param column:      Column to select
-    :param where_col:   Column name for WHERE condition
-    :param where_val:   Value to match (case-insensitive)
-    :return:            List of matching values
+    :param table:           Table name to query
+    :param column:          Column to select
+    :param where_col:       Column name for primary WHERE condition
+    :param where_val:       Value to match (case-insensitive)
+    :param or_conditions:   Optional list of (col, val) tuples for OR conditions
+                            e.g. [("email", "test@example.com"), ("phone", "12345")]
+    :return:                First matching value or None
     """
      try:
-        async with get_async_db() as connection:
-            query = f"SELECT {column} FROM {table} WHERE LOWER({where_col}) = LOWER($1)"
-            rows = await connection.fetch(query, where_val)
-            return [row[0] for row in rows]
+        async with get_async_db() as session:
+            bind_params = {"val0": where_val}
+            query = f"SELECT {column} FROM {table} WHERE LOWER({where_col}) = LOWER(:val0)"
+
+            if or_conditions:
+                for i, (col, val) in enumerate(or_conditions, start=1):
+                    key = f"val{i}"
+                    query += f" OR LOWER({col}) = LOWER(:{key})"
+                    bind_params[key] = val
+
+            query += " LIMIT 1"
+            result = await session.execute(text(query), bind_params)
+            row = result.fetchone()
+            return row[0] if row else None
 
      except Exception as e:
         raise Exception(f"Database query failed: {str(e)}")

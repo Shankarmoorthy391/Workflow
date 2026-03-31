@@ -29,6 +29,7 @@ from helper.helper_funtion import HelperFunctionController
 from dotenv import load_dotenv
 load_dotenv()
 from extractor import HBLExtractor
+from routes.dropdown import router as dropdown_router
 
 # ---------------------------------------------------------------------------
 # Config
@@ -231,6 +232,8 @@ app = FastAPI(title="HBL PDF Manager")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
+
+app.include_router(dropdown_router)
 
 
 @app.get("/")
@@ -595,7 +598,26 @@ async def process_jobs(data: list, Request):
         try:
             if api_payload:
                 print(f"[Job] Payload ready | txn_id={txn_id}")
-                # await HelperFunctionController.search_from_db
+                
+                origin_code = api_payload.get("origin_code")
+                destination_code = api_payload.get("destination_code")
+                carrier_code = api_payload.get("carrier_code")
+
+                api_payload["origin_code"] = await HelperFunctionController.search_from_db("tv_port_code", "port_code", "port_code", origin_code, or_conditions=[("alias_code", origin_code)]) or origin_code
+                api_payload["destination_code"] = await HelperFunctionController.search_from_db("tv_port_code", "port_code", "port_code", destination_code, or_conditions=[("alias_code", destination_code)]) or destination_code
+                api_payload["carrier_code"] = await HelperFunctionController.search_from_db("tv_carrier_code", "carrier_code", "carrier_code", carrier_code, or_conditions=[("alias_code", carrier_code)]) or carrier_code
+
+                for ho in api_payload.get("housing_details", []):
+                    ho_origin = ho.get("origin_code")
+                    ho_destination = ho.get("destination_code")
+                    ho["origin_code"] = await HelperFunctionController.search_from_db("tv_port_code", "port_code", "port_code", ho_origin, or_conditions=[("alias_code", ho_origin)]) or ho_origin
+                    ho["destination_code"] = await HelperFunctionController.search_from_db("tv_port_code", "port_code", "port_code", ho_destination, or_conditions=[("alias_code", ho_destination)]) or ho_destination
+
+                
+
+
+
+
 
                 await HelperFunctionController.create_job(Request, api_payload)
 
