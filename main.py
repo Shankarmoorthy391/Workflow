@@ -131,9 +131,8 @@ async def run_extraction(txn_id: str, pdf_path: str, filename: str, pdf_type: st
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    # Scoped to txn_id + file_type so MBL and HBL don't overwrite each other
-                    "UPDATE public.pdf_uploads SET status='processing' WHERE txn_id=%s AND file_type=%s",
-                    (txn_id, pdf_type)
+                    "UPDATE public.pdf_uploads SET status='processing', final_status='processing' WHERE txn_id=%s AND file_type=%s AND filename=%s",
+                    (txn_id, pdf_type, filename)
                 )
             conn.commit()
         print(f"[Task] Status set to processing | txn_id={txn_id} | pdf_type={pdf_type}")
@@ -214,6 +213,19 @@ async def run_extraction(txn_id: str, pdf_path: str, filename: str, pdf_type: st
                         processed_at   = NOW()
                     WHERE txn_id = %s AND file_type = %s and filename = %s
                 """, (result["pdf_type"], json.dumps(stored_json), txn_id, pdf_type,filename))
+            conn.commit()
+            # ── Mark final_status=done when ALL records for this txn_id are done ──
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE pdf_uploads
+                    SET final_status = 'done'
+                    WHERE txn_id = %s
+                      AND (
+                          SELECT COUNT(*) FROM pdf_uploads WHERE txn_id = %s
+                      ) = (
+                          SELECT COUNT(*) FROM pdf_uploads WHERE txn_id = %s AND status = 'done'
+                      )
+                """, (txn_id, txn_id, txn_id))
             conn.commit()
         print(f"[Task] Status set to done | txn_id={txn_id} | pdf_type={pdf_type} | cost_usd={result['cost_usd']}")
     except psycopg2.Error as e:
@@ -626,7 +638,7 @@ async def process_jobs(data: list, Request):
                     cur.execute(
                         """
                         UPDATE public.pdf_uploads
-                        SET status = 'job_created', processed_at = NOW()
+                        SET status = 'job_created', processed_at = NOW(),final_status = 'JOB_CREATED'
                         WHERE txn_id = %s
                         """,
                         (txn_id,)
@@ -644,6 +656,7 @@ async def process_jobs(data: list, Request):
                             """
                             UPDATE public.pdf_uploads
                             SET status = 'job_creation_failed',
+                                final_status = 'JOB_CREATION_FAILED',
                                 error_message = %s,
                                 processed_at = NOW()
                             WHERE txn_id = %s
