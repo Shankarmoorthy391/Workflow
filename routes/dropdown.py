@@ -32,6 +32,11 @@ class CarrierAliasCreate(BaseModel):
     status: Optional[str] = "ACTIVE"
 
 
+class ContainerAliasCreate(BaseModel):
+    alias_code: str
+    container_code: str
+
+
 
 
 # ── Port dropdown ─────────────────────────────────────────────────────────────
@@ -162,5 +167,69 @@ async def create_carrier_alias(payload: CarrierAliasCreate):
 
     except Exception as e:
         print(f"[CarrierAlias][ERROR] Create failed | reason={str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+
+# ── Container Code dropdown ───────────────────────────────────────────────────
+
+@router.get("/workflow/container-codes")
+async def get_container_codes(search: Optional[str] = Query(default=None, description="Filter containers by name or code")):
+    """
+    Returns all columns from tv_container_code.
+    Optionally filters by a search string (case-insensitive match on name or code).
+    """
+    print(f"[Dropdown] ContainerCodes request | search={search}")
+    try:
+        async with get_async_db() as conn:
+            if search:
+                sql = text("""
+                    SELECT * FROM public.tv_container_code
+                    WHERE LOWER(container_name) LIKE LOWER(:search) OR LOWER(container_code) LIKE LOWER(:search)
+                    ORDER BY container_name ASC
+                """)
+                result = await conn.execute(sql, {"search": f"%{search}%"})
+            else:
+                sql = text("SELECT * FROM public.tv_container_code ORDER BY container_name ASC")
+                result = await conn.execute(sql)
+
+            rows = result.mappings().all()
+
+        data = [dict(r) for r in rows]
+        print(f"[Dropdown] ContainerCodes returned {len(data)} record(s)")
+        return {"container_codes": data, "total": len(data)}
+
+    except Exception as e:
+        print(f"[Dropdown][ERROR] Unexpected error | reason={str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+
+# ── Container Code Alias ──────────────────────────────────────────────────────
+
+@router.post("/workflow/container-type-aliases", status_code=201)
+async def create_container_alias(payload: ContainerAliasCreate):
+    """Insert a new container code alias record."""
+    print(f"[ContainerAlias] Create request | alias_code={payload.alias_code} | container_code={payload.container_code}")
+    try:
+        async with get_async_db() as conn:
+            result = await conn.execute(
+                text("""
+                    INSERT INTO public.container_code_alias (alias_code, container_code)
+                    VALUES (:alias_code, :container_code)
+                    RETURNING *
+                """),
+                {
+                    "alias_code":      payload.alias_code,
+                    "container_code":  payload.container_code,
+                },
+            )
+            row = result.mappings().fetchone()
+
+        print(f"[ContainerAlias] Created | alias_code={payload.alias_code}")
+        return dict(row)
+
+    except Exception as e:
+        print(f"[ContainerAlias][ERROR] Create failed | reason={str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")

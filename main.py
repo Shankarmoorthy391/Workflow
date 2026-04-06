@@ -625,6 +625,15 @@ async def process_jobs(data: list, Request):
                     ho["origin_code"] = await HelperFunctionController.search_from_db("tv_port_code", "port_code", "port_code", ho_origin, or_conditions=[("alias_code", ho_origin)]) or ho_origin
                     ho["destination_code"] = await HelperFunctionController.search_from_db("tv_port_code", "port_code", "port_code", ho_destination, or_conditions=[("alias_code", ho_destination)]) or ho_destination
 
+
+                # container types
+                for cont in api_payload.get("container_details", []):
+                    cont_type = cont.get("container_type_input")
+                    code = await HelperFunctionController.search_from_db("tv_container_code", "container_code", "container_code", cont_type, or_conditions=[("alias_code", cont_type)])
+                    print(f"[Job] Container code lookup | input={cont_type} | found={code}")
+                    cont["container_type_input"] = code or cont_type
+
+
                 
 
 

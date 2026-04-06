@@ -252,8 +252,8 @@ Return ONLY one blocks, no additional prose:
     },
     "mbl_number": {
       "type": "string",
-      "description": "Master Bill of Lading number",
-      "examples": ["MBL123456"]
+      "description": "Master Bill of Lading number.Includes all alphanumeric characters as printed on the document, including prefixes, suffixes, and check digits.",
+      "examples": ["MBL123456","HDMUNBOA89597700"]
     },
     "mbl_date": {
       "type": "string",
@@ -296,13 +296,6 @@ Return ONLY one blocks, no additional prose:
       "description": "MBL-level cost estimates",
       "items": {
         "$ref": "#/definitions/Estimate"
-      }
-    },
-    "housing_details": {
-      "type": "array",
-      "description": "List of House Bill of Lading records",
-      "items": {
-        "$ref": "#/definitions/HousingDetail"
       }
     }
   },
@@ -387,11 +380,7 @@ Return ONLY one blocks, no additional prose:
       "description": "Details of an individual container",
       "required": ["container_type_input", "container_no"],
       "properties": {
-        # "id": {
-        #   "type": "integer",
-        #   "description": "Unique container record identifier",
-        #   "examples": [259]
-        # },
+      
         "container_type_input": {
           "type": "string",
           "description": "Container ISO size/type code",
@@ -425,11 +414,11 @@ Return ONLY one blocks, no additional prose:
           "description": "Date the container was discharged/unloaded (YYYY-MM-DD)",
           "examples": ["2026-01-17"]
         },
-        "cfs_id": {
-          "type": "integer",
-          "description": "Container Freight Station identifier",
-          "examples": [1]
-        }
+        # "cfs_id": {
+        #   "type": "integer",
+        #   "description": "Container Freight Station identifier",
+        #   "examples": [1]
+        # }
       },
       "additionalProperties": False
     },
@@ -509,60 +498,6 @@ Return ONLY one blocks, no additional prose:
       "additionalProperties": False
     },
     
-    "CargoDetail": {
-      "type": "object",
-      "description": "Individual cargo package detail within an HBL",
-      "required": [
-          "container_no",
-         "no_of_packages",
-        "gross_weight",
-        "volume",
-        "chargeable_weight",
-        "haz"
-      ],
-      "properties": {
-        # "id": {
-        #   "type": "integer",
-        #   "description": "Unique cargo detail record identifier",
-        #   "examples": [656]
-        # },
-        "container_no": {
-          "type": "string",
-          "description": "Container number this cargo belongs to",
-          "examples": ["CONT17"]
-        },
-        "no_of_packages": {
-          "type": "integer",
-          "description": "Number of packages",
-          "minimum": 0,
-          "examples": [17]
-        },
-        "gross_weight": {
-          "type": "string",
-          "description": "Gross weight as a numeric string with up to 2 decimal places (KG)",
-          "pattern": "^[0-9]+(\\.[0-9]{1,2})?$",
-          "examples": ["2.00"]
-        },
-        "volume": {
-          "type": "string",
-          "description": "Volume as a numeric string with up to 2 decimal places (CBM)",
-          "pattern": "^[0-9]+(\\.[0-9]{1,2})?$",
-          "examples": ["2.00"]
-        },
-        "chargeable_weight": {
-          "type": "string",
-          "description": "Chargeable weight as a numeric string with up to 2 decimal places (KG)",
-          "pattern": "^[0-9]+(\\.[0-9]{1,2})?$",
-          "examples": ["20.00"]
-        },
-        "haz": {
-          "type": "boolean",
-          "description": "Whether the cargo is hazardous",
-          "examples": [False, True]
-        }
-      },
-      "additionalProperties": False
-    },
     "MblCharge": {
       "type": "object",
       "description": "Charge line item within an HBL",
@@ -931,13 +866,13 @@ Return ONLY one blocks, no additional prose:
             "$ref": "#/definitions/CargoDetail"
           }
         },
-        "mbl_charges": {
-          "type": "array",
-          "description": "Charge line items associated with this HBL",
-          "items": {
-            "$ref": "#/definitions/MblCharge"
-          }
-        },
+        # "mbl_charges": {
+        #   "type": "array",
+        #   "description": "Charge line items associated with this HBL",
+        #   "items": {
+        #     "$ref": "#/definitions/MblCharge"
+        #   }
+        # },
         # "events": {
         #   "type": "array",
         #   "description": "Shipment milestone events for this HBL",
@@ -949,9 +884,62 @@ Return ONLY one blocks, no additional prose:
       "additionalProperties": False
     },
 
-   
-  
-  
+    "CargoDetail": {
+      "type": "object",
+      "description": "Individual cargo package detail within an HBL",
+      "required": [
+        "container_no",
+        "no_of_packages",
+        "gross_weight",
+        "volume",
+        "chargeable_weight",
+        "haz"
+      ],
+      "properties": {
+        "container_no": {
+          "type": "string",
+          "description": "Container number this cargo belongs to. Use empty string if not found.",
+          "default": "",
+          "examples": ["CONT17"]
+        },
+        "no_of_packages": {
+          "type": "integer",
+          "description": "Number of packages. Use 0 if not found.",
+          "minimum": 0,
+          "default": 0,
+          "examples": [17]
+        },
+        "gross_weight": {
+          "type": "string",
+          "description": "Gross weight as a numeric string with up to 2 decimal places (KG). Use '0.00' if not found.",
+          "pattern": "^[0-9]+(\\.[0-9]{1,2})?$",
+          "default": "0.00",
+          "examples": ["2.00"]
+        },
+        "volume": {
+          "type": "string",
+          "description": "Volume as a numeric string with up to 2 decimal places (CBM). Use '0.00' if not found.",
+          "pattern": "^[0-9]+(\\.[0-9]{1,2})?$",
+          "default": "0.00",
+          "examples": ["2.00"]
+        },
+        "chargeable_weight": {
+          "type": "string",
+          "description": "Chargeable weight as a numeric string with up to 2 decimal places (KG). Use '0.00' if not found.",
+          "pattern": "^[0-9]+(\\.[0-9]{1,2})?$",
+          "default": "0.00",
+          "examples": ["20.00"]
+        },
+        "haz": {
+          "type": "boolean",
+          "description": "Whether the cargo is hazardous. Use false if not found.",
+          "default": False,
+          "examples": [False, True]
+        }
+      },
+      "additionalProperties": False
+    }
+
   }
 }
 
