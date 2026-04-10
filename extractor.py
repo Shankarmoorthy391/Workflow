@@ -105,7 +105,7 @@ STRICT RULES
 1. REQUIRED fields must always be present. If not found, output null.
 2. OPTIONAL fields absent from the document must be omitted entirely.
 3. TYPE ENFORCEMENT — follow schema types exactly.
-4. additionalProperties is true — add extra fields as snake_case keys.
+4. additionalProperties is FALSE — output ONLY the fields defined in the schema. Do NOT invent or add extra keys.
 5. Preserve original casing, punctuation, and numeric values exactly.
 6. NIL or N/M in document → capture the literal string value.
 7. phone/email with multiple values → JSON array of strings.
@@ -626,7 +626,8 @@ Return ONLY one blocks, no additional prose:
       },
       "additionalProperties": False
     }
-  }
+  },
+  "additionalProperties": False
 }
 
     SCHEMA_HBL = {
@@ -941,6 +942,7 @@ Return ONLY one blocks, no additional prose:
     }
 
   }
+  ,"additionalProperties": False
 }
 
    
