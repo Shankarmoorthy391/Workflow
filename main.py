@@ -52,6 +52,40 @@ os.makedirs(JSON_DIR,   exist_ok=True)
 extractor = HBLExtractor()
 
 # ---------------------------------------------------------------------------
+# JWT helpers
+# ---------------------------------------------------------------------------
+
+def _auth_token(request: Request) -> str:
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[len("Bearer "):]
+    return ""
+
+
+def _token_payload(request: Request) -> dict:
+    """
+    Decode the JWT from the Authorization header and return its JSON payload.
+    Signature verification is skipped — trust the auth middleware for that.
+    Returns an empty dict if the token is missing or malformed.
+    """
+    import base64
+    try:
+        token = _auth_token(request)
+        if not token:
+            return {}
+        # JWT = header.payload.signature  — we only need the payload part
+        payload_b64 = token.split(".")[1]
+        # Restore base64 padding
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload =json.loads(base64.urlsafe_b64decode(payload_b64))
+        print(f"[JWT] Decoding token | payload_b64={payload}")
+        return payload
+    except Exception as e:
+        print(f"[JWT] Error decoding token | error={str(e)}")
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
 
@@ -257,11 +291,15 @@ def serve_index():
 
 @app.post("/workflow/upload")
 async def upload_pdfs(
+    request: Request,
     background_tasks: BackgroundTasks,
     hbl_attachments: List[UploadFile] = File(default=[]),
     mbl_attachments: List[UploadFile] = File(default=[])
 ):
     print(f"[Upload] Received {len(hbl_attachments)} HBL + {len(mbl_attachments)} MBL file(s)")
+    claims     = _token_payload(request)
+    branch_id  = claims.get("branchId") or claims.get("branch_id")
+    created_by = claims.get("user_id") or claims.get("userId") or claims.get("username") or "unknown"
 
     if not hbl_attachments and not mbl_attachments:
         return JSONResponse(
@@ -317,9 +355,9 @@ async def upload_pdfs(
                 with conn.cursor() as cur:
                     cur.execute("""
                         INSERT INTO public.pdf_uploads
-                            (txn_id, filename, file_path, size_kb, file_type, status)
-                        VALUES (%s, %s, %s, %s, %s, 'pending')
-                    """, (txn_id, file.filename, file_path, size_kb, pdf_type))
+                            (txn_id, filename, file_path, size_kb, file_type, status, branch_id, created_by)
+                        VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s)
+                    """, (txn_id, file.filename, file_path, size_kb, pdf_type, branch_id, created_by))
                 conn.commit()
             print(f"[Upload] DB record inserted | txn_id={txn_id} | filename={file.filename} | pdf_type={pdf_type}")
         except psycopg2.IntegrityError as e:
@@ -369,13 +407,19 @@ async def upload_pdfs(
 # ── List files ────────────────────────────────────────────────────────────────
 
 @app.get("/workflow/files")
-def list_files(status: Optional[str] = None, search: Optional[str] = None):
-    print(f"[ListFiles] Request | status={status} | search={search}")
+def list_files(request: Request, status: Optional[str] = None, search: Optional[str] = None, branch_id: Optional[str] = None):
+    claims = _token_payload(request)
+    # Use branch_id from query param; fall back to JWT claim
+    effective_branch_id = branch_id or claims.get("branchId") or claims.get("branch_id")
+    print(f"[ListFiles] Request | status={status} | search={search} | branch_id={effective_branch_id}")
     try:
         query  = "SELECT * FROM tv_upload_list"
         params = []
         wheres = []
 
+        if effective_branch_id:
+            wheres.append("branch_id = %s")
+            params.append(effective_branch_id)
         if status:
             wheres.append("status = %s")
             params.append(status)
