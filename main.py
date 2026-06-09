@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from extractor import HBLExtractor
 from routes.dropdown import router as dropdown_router
+from Config import s3_storage
 
 # ---------------------------------------------------------------------------
 # Config
@@ -117,6 +118,39 @@ def format_ts(ts):
     return ts.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _fetch_txn_file_urls(txn_ids: List[str]) -> dict:
+    """Return {txn_id: {"hbl": url, "mbl": url}} from pdf_uploads."""
+    if not txn_ids:
+        return {}
+    url_map = {}
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT txn_id, file_type, file_path FROM public.pdf_uploads WHERE txn_id = ANY(%s)",
+                (txn_ids,),
+            )
+            for rec in cur.fetchall():
+                txn = rec["txn_id"]
+                ft = (rec["file_type"] or "").lower()
+                url = s3_storage.normalize_file_url(rec["file_path"])
+                if url:
+                    url_map.setdefault(txn, {})[ft] = url
+    return url_map
+
+
+def _apply_file_urls(row: dict, url_map: dict) -> dict:
+    r = dict(row)
+    urls = url_map.get(r.get("txn_id"), {})
+    r["hbl_file_url"] = urls.get("hbl")
+    r["mbl_file_url"] = urls.get("mbl")
+    r["file_url"] = (
+        r.get("mbl_file_url")
+        or r.get("hbl_file_url")
+        or s3_storage.normalize_file_url(r.get("file_path"))
+    )
+    return r
+
+
 def row_to_dict(row: dict) -> dict:
     """Convert a DB row to API response dict, unpacking JSONB fields."""
     ed   = row["api_payload"] or {}
@@ -125,6 +159,7 @@ def row_to_dict(row: dict) -> dict:
         "txn_id":            row["txn_id"],
         "filename":          row["filename"],
         "file_path":         row["file_path"],
+        "file_url":          s3_storage.normalize_file_url(row.get("file_path")),
         "size_kb":           row["size_kb"],
         "pdf_type":          row["pdf_type"],
         "status":            row["status"],
@@ -160,114 +195,119 @@ async def run_extraction(txn_id: str, pdf_path: str, filename: str, pdf_type: st
     """
     print(f"[Task] Extraction started | txn_id={txn_id} | file={filename} | pdf_type={pdf_type}")
 
-    # ── Mark as processing ─────────────────────────────────────────────────
     try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE public.pdf_uploads SET status='processing', final_status='processing' WHERE txn_id=%s AND file_type=%s AND filename=%s",
-                    (txn_id, pdf_type, filename)
-                )
-            conn.commit()
-        print(f"[Task] Status set to processing | txn_id={txn_id} | pdf_type={pdf_type}")
-    except psycopg2.Error as e:
-        print(f"[Task][ERROR] DB update to processing failed | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
-        print(traceback.format_exc())
-        return
-    except Exception as e:
-        print(f"[Task][ERROR] Unexpected error marking processing | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
-        print(traceback.format_exc())
-        return
+        # ── Mark as processing ─────────────────────────────────────────────────
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE public.pdf_uploads SET status='processing', final_status='processing' WHERE txn_id=%s AND file_type=%s AND filename=%s",
+                        (txn_id, pdf_type, filename)
+                    )
+                conn.commit()
+            print(f"[Task] Status set to processing | txn_id={txn_id} | pdf_type={pdf_type}")
+        except psycopg2.Error as e:
+            print(f"[Task][ERROR] DB update to processing failed | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
+            print(traceback.format_exc())
+            return
+        except Exception as e:
+            print(f"[Task][ERROR] Unexpected error marking processing | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
+            print(traceback.format_exc())
+            return
 
-    # ── Run extraction ─────────────────────────────────────────────────────
-    try:
-        result = await extractor.extract(pdf_path, schema_type=pdf_type)
-    except Exception as e:
-        error_msg = f"Extractor crash: {type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
-        print(f"[Task][ERROR] Extractor crashed | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
-        print(traceback.format_exc())
-        result = {"success": False, "pdf_type": pdf_type, "error": error_msg}
+        # ── Run extraction ─────────────────────────────────────────────────────
+        try:
+            result = await extractor.extract(pdf_path, schema_type=pdf_type)
+        except Exception as e:
+            error_msg = f"Extractor crash: {type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+            print(f"[Task][ERROR] Extractor crashed | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
+            print(traceback.format_exc())
+            result = {"success": False, "pdf_type": pdf_type, "error": error_msg}
 
-    # ── Handle failed extraction ───────────────────────────────────────────
-    if not result["success"]:
-        print(f"[Task] Extraction failed | txn_id={txn_id} | pdf_type={pdf_type} | error={result['error'][:200]}")
+        # ── Handle failed extraction ───────────────────────────────────────────
+        if not result["success"]:
+            print(f"[Task] Extraction failed | txn_id={txn_id} | pdf_type={pdf_type} | error={result['error'][:200]}")
+            try:
+                with get_db() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            UPDATE public.pdf_uploads
+                            SET status='failed', error_message=%s, processed_at=NOW()
+                            WHERE txn_id=%s AND file_type=%s
+                        """, (str(result["error"])[:3000], txn_id, pdf_type))
+                    conn.commit()
+                print(f"[Task] Status set to failed | txn_id={txn_id} | pdf_type={pdf_type}")
+            except psycopg2.Error as e:
+                print(f"[Task][ERROR] DB update to failed | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
+                print(traceback.format_exc())
+            except Exception as e:
+                print(f"[Task][ERROR] Unexpected DB error on failure update | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
+                print(traceback.format_exc())
+            return
+
+        # ── Save JSON file to disk ─────────────────────────────────────────────
+        json_path = None
+        try:
+            json_filename = f"{os.path.splitext(filename)[0]}_{txn_id}.json"
+            json_path     = os.path.join(JSON_DIR, json_filename)
+            print(f"[Task] JSON path set | txn_id={txn_id} | pdf_type={pdf_type} | path={json_path}")
+        except OSError as e:
+            print(f"[Task][WARN] Could not save JSON file | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
+            json_path = None
+        except Exception as e:
+            print(f"[Task][WARN] Unexpected error saving JSON | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
+            print(traceback.format_exc())
+            json_path = None
+
+        # ── Build JSONB payload ────────────────────────────────────────────────
+        stored_json = {
+            "data":          result["extracted_data"],
+            "diff_summary":  result["diff_summary"],
+            "input_tokens":  result["input_tokens"],
+            "output_tokens": result["output_tokens"],
+            "cost_usd":      result["cost_usd"],
+            "json_file":     json_path,
+        }
+
+        # ── Update DB to done ──────────────────────────────────────────────────
         try:
             with get_db() as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        UPDATE public.pdf_uploads
-                        SET status='failed', error_message=%s, processed_at=NOW()
-                        WHERE txn_id=%s AND file_type=%s
-                    """, (str(result["error"])[:3000], txn_id, pdf_type))
+                        UPDATE public.pdf_uploads SET
+                            pdf_type       = %s,
+                            status         = 'done',
+                            extracted_data = %s,
+                            processed_at   = NOW()
+                        WHERE txn_id = %s AND file_type = %s and filename = %s
+                    """, (result["pdf_type"], json.dumps(stored_json), txn_id, pdf_type, filename))
                 conn.commit()
-            print(f"[Task] Status set to failed | txn_id={txn_id} | pdf_type={pdf_type}")
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE pdf_uploads
+                        SET final_status = 'done'
+                        WHERE txn_id = %s
+                          AND (
+                              SELECT COUNT(*) FROM pdf_uploads WHERE txn_id = %s
+                          ) = (
+                              SELECT COUNT(*) FROM pdf_uploads WHERE txn_id = %s AND status = 'done'
+                          )
+                    """, (txn_id, txn_id, txn_id))
+                conn.commit()
+            print(f"[Task] Status set to done | txn_id={txn_id} | pdf_type={pdf_type} | cost_usd={result['cost_usd']}")
         except psycopg2.Error as e:
-            print(f"[Task][ERROR] DB update to failed | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
+            print(f"[Task][ERROR] DB update to done failed | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
             print(traceback.format_exc())
         except Exception as e:
-            print(f"[Task][ERROR] Unexpected DB error on failure update | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
+            print(f"[Task][ERROR] Unexpected DB error on done update | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
             print(traceback.format_exc())
-        return
-
-    # ── Save JSON file to disk ─────────────────────────────────────────────
-    json_path = None
-    try:
-        json_filename = f"{os.path.splitext(filename)[0]}_{txn_id}.json"
-        json_path     = os.path.join(JSON_DIR, json_filename)
-        # with open(json_path, "w", encoding="utf-8") as f:
-        #     json.dump(result["extracted_data"], f, indent=2, ensure_ascii=False)
-        print(f"[Task] JSON path set | txn_id={txn_id} | pdf_type={pdf_type} | path={json_path}")
-    except OSError as e:
-        print(f"[Task][WARN] Could not save JSON file | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
-        json_path = None
-    except Exception as e:
-        print(f"[Task][WARN] Unexpected error saving JSON | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
-        print(traceback.format_exc())
-        json_path = None
-
-    # ── Build JSONB payload ────────────────────────────────────────────────
-    stored_json = {
-        "data":          result["extracted_data"],
-        "diff_summary":  result["diff_summary"],
-        "input_tokens":  result["input_tokens"],
-        "output_tokens": result["output_tokens"],
-        "cost_usd":      result["cost_usd"],
-        "json_file":     json_path,
-    }
-
-    # ── Update DB to done ──────────────────────────────────────────────────
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE public.pdf_uploads SET
-                        pdf_type       = %s,
-                        status         = 'done',
-                        extracted_data = %s,
-                        processed_at   = NOW()
-                    WHERE txn_id = %s AND file_type = %s and filename = %s
-                """, (result["pdf_type"], json.dumps(stored_json), txn_id, pdf_type,filename))
-            conn.commit()
-            # ── Mark final_status=done when ALL records for this txn_id are done ──
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE pdf_uploads
-                    SET final_status = 'done'
-                    WHERE txn_id = %s
-                      AND (
-                          SELECT COUNT(*) FROM pdf_uploads WHERE txn_id = %s
-                      ) = (
-                          SELECT COUNT(*) FROM pdf_uploads WHERE txn_id = %s AND status = 'done'
-                      )
-                """, (txn_id, txn_id, txn_id))
-            conn.commit()
-        print(f"[Task] Status set to done | txn_id={txn_id} | pdf_type={pdf_type} | cost_usd={result['cost_usd']}")
-    except psycopg2.Error as e:
-        print(f"[Task][ERROR] DB update to done failed | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
-        print(traceback.format_exc())
-    except Exception as e:
-        print(f"[Task][ERROR] Unexpected DB error on done update | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
-        print(traceback.format_exc())
+    finally:
+        if s3_storage.USE_S3 and pdf_path and os.path.exists(pdf_path):
+            try:
+                os.remove(pdf_path)
+                print(f"[Task] Local temp file removed | txn_id={txn_id} | path={pdf_path}")
+            except OSError as e:
+                print(f"[Task][WARN] Could not remove local temp file | txn_id={txn_id} | reason={str(e)}")
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -300,6 +340,15 @@ async def upload_pdfs(
     claims     = _token_payload(request)
     branch_id  = claims.get("branchId") or claims.get("branch_id")
     created_by = claims.get("user_id") or claims.get("userId") or claims.get("username") or "unknown"
+    schema_name = claims.get("schema") or "public"
+
+    if s3_storage.USE_S3:
+        if not claims.get("schema"):
+            user_data = await HelperFunctionController.get_user_details(request)
+            schema_name = user_data.get("schema") or schema_name
+            if not branch_id:
+                branch_id = user_data.get("active_branch_id")
+        print(f"[Upload] S3 enabled | schema={schema_name} | branch_id={branch_id}")
 
     if not hbl_attachments and not mbl_attachments:
         return JSONResponse(
@@ -328,14 +377,23 @@ async def upload_pdfs(
         #     errors.append({"filename": file.filename, "pdf_type": pdf_type, "error": "Only PDF files are accepted"})
         #     continue
 
-        file_path = os.path.join(UPLOAD_DIR, f"{txn_id}_{pdf_type}_{file.filename}")
+        local_path = os.path.join(UPLOAD_DIR, f"{txn_id}_{pdf_type}_{file.filename}")
+        db_file_path = local_path
+        s3_key = None
 
-        # Save PDF to disk
         try:
             content = await file.read()
-            with open(file_path, "wb") as buf:
+            with open(local_path, "wb") as buf:
                 buf.write(content)
-            print(f"[Upload] File saved | txn_id={txn_id} | pdf_type={pdf_type} | path={file_path}")
+            print(f"[Upload] File saved locally | txn_id={txn_id} | pdf_type={pdf_type} | path={local_path}")
+
+            if s3_storage.USE_S3:
+                s3_key, db_file_path = s3_storage.upload_bytes(
+                    content, file.filename, DB_CONFIG["database"], schema_name
+                )
+                print(f"[Upload] File uploaded to S3 | txn_id={txn_id} | url={db_file_path}")
+
+            size_kb = round(len(content) / 1024, 2)
         except OSError as e:
             print(f"[Upload][ERROR] File save failed | txn_id={txn_id} | filename={file.filename} | reason={str(e)}")
             print(traceback.format_exc())
@@ -345,9 +403,16 @@ async def upload_pdfs(
             print(f"[Upload][ERROR] Unexpected error | txn_id={txn_id} | filename={file.filename} | reason={str(e)}")
             print(traceback.format_exc())
             errors.append({"filename": file.filename, "pdf_type": pdf_type, "error": f"Unexpected error: {str(e)}"})
+            if s3_key:
+                try:
+                    s3_storage.delete_object(s3_key)
+                except Exception:
+                    pass
+            try:
+                os.remove(local_path)
+            except OSError:
+                pass
             continue
-
-        size_kb = round(os.path.getsize(file_path) / 1024, 2)
 
         # Insert DB record — all rows share the same txn_id
         try:
@@ -357,32 +422,53 @@ async def upload_pdfs(
                         INSERT INTO public.pdf_uploads
                             (txn_id, filename, file_path, size_kb, file_type, status, branch_id, created_by)
                         VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s)
-                    """, (txn_id, file.filename, file_path, size_kb, pdf_type, branch_id, created_by))
+                    """, (txn_id, file.filename, db_file_path, size_kb, pdf_type, branch_id, created_by))
                 conn.commit()
             print(f"[Upload] DB record inserted | txn_id={txn_id} | filename={file.filename} | pdf_type={pdf_type}")
         except psycopg2.IntegrityError as e:
             print(f"[Upload][ERROR] DB integrity error | txn_id={txn_id} | reason={str(e)}")
             print(traceback.format_exc())
             errors.append({"filename": file.filename, "pdf_type": pdf_type, "error": f"DB integrity error: {str(e)}"})
-            try: os.remove(file_path)
-            except OSError: pass
+            if s3_key:
+                try:
+                    s3_storage.delete_object(s3_key)
+                except Exception:
+                    pass
+            try:
+                os.remove(local_path)
+            except OSError:
+                pass
             continue
         except psycopg2.Error as e:
             print(f"[Upload][ERROR] DB insert failed | txn_id={txn_id} | reason={str(e)}")
             print(traceback.format_exc())
             errors.append({"filename": file.filename, "pdf_type": pdf_type, "error": f"DB insert failed: {str(e)}"})
-            try: os.remove(file_path)
-            except OSError: pass
+            if s3_key:
+                try:
+                    s3_storage.delete_object(s3_key)
+                except Exception:
+                    pass
+            try:
+                os.remove(local_path)
+            except OSError:
+                pass
             continue
         except Exception as e:
             print(f"[Upload][ERROR] Unexpected DB error | txn_id={txn_id} | reason={str(e)}")
             print(traceback.format_exc())
             errors.append({"filename": file.filename, "pdf_type": pdf_type, "error": f"Unexpected error: {str(e)}"})
-            try: os.remove(file_path)
-            except OSError: pass
+            if s3_key:
+                try:
+                    s3_storage.delete_object(s3_key)
+                except Exception:
+                    pass
+            try:
+                os.remove(local_path)
+            except OSError:
+                pass
             continue
 
-        background_tasks.add_task(run_extraction, txn_id, file_path, file.filename, pdf_type)
+        background_tasks.add_task(run_extraction, txn_id, local_path, file.filename, pdf_type)
         print(f"[Upload] Extraction queued | txn_id={txn_id} | filename={file.filename} | pdf_type={pdf_type}")
 
         results.append({
@@ -391,6 +477,7 @@ async def upload_pdfs(
             "size_kb":   size_kb,
             "pdf_type":  pdf_type,
             "file_type": pdf_type,
+            "file_url":  s3_storage.normalize_file_url(db_file_path),
             "status":    "pending",
             "message":   "Uploaded. Claude extraction queued..."
         })
@@ -437,7 +524,10 @@ def list_files(request: Request, status: Optional[str] = None, search: Optional[
                 rows = cur.fetchall()
 
         print(f"[ListFiles] Returned {len(rows)} record(s)")
-        return {"files": rows, "total": len(rows)}
+        txn_ids = list({row["txn_id"] for row in rows if row.get("txn_id")})
+        url_map = _fetch_txn_file_urls(txn_ids)
+        files = [_apply_file_urls(row, url_map) for row in rows]
+        return {"files": files, "total": len(files)}
 
     except psycopg2.Error as e:
         print(f"[ListFiles][ERROR] DB error | reason={str(e)}")
@@ -459,16 +549,19 @@ def get_file(txn_id: str):
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT * FROM public.pdf_uploads WHERE txn_id = %s",
-                    (txn_id,)
+                    "SELECT * FROM public.pdf_uploads WHERE txn_id = %s ORDER BY file_type",
+                    (txn_id,),
                 )
-                row = cur.fetchone()
+                rows = cur.fetchall()
 
-        if not row:
+        if not rows:
             print(f"[GetFile][WARN] Record not found | txn_id={txn_id}")
             raise HTTPException(status_code=404, detail=f"No record found: {txn_id}")
 
+        row = next((r for r in rows if r["file_type"] == "mbl"), rows[0])
         result = row_to_dict(row)
+        url_map = _fetch_txn_file_urls([txn_id])
+        result = _apply_file_urls(result, url_map)
         ed = row["extracted_data"] or {}
         result["extracted_data"] = ed.get("data")
         print(f"[GetFile] Record found | txn_id={txn_id} | status={row['status']}")
@@ -575,11 +668,21 @@ def delete_files(txn_ids: List[str]):
                             errors.append({"txn_id": txn_id, "error": "Not found in DB"})
                             continue
 
-                        # Remove PDF file from disk
-                        if row["file_path"] and os.path.exists(row["file_path"]):
+                        # Remove uploaded file (S3 or local disk)
+                        stored = row["file_path"]
+                        if s3_storage.USE_S3 and s3_storage.is_s3_stored_path(stored):
                             try:
-                                os.remove(row["file_path"])
-                                print(f"[Delete] PDF file removed | txn_id={txn_id} | path={row['file_path']}")
+                                key = s3_storage.s3_key_from_stored_path(stored)
+                                if key:
+                                    s3_storage.delete_object(key)
+                                    print(f"[Delete] S3 file removed | txn_id={txn_id} | key={key}")
+                            except Exception as e:
+                                print(f"[Delete][WARN] Could not remove S3 file | txn_id={txn_id} | reason={str(e)}")
+                                errors.append({"txn_id": txn_id, "error": f"S3 delete error: {str(e)}"})
+                        elif stored and os.path.exists(stored):
+                            try:
+                                os.remove(stored)
+                                print(f"[Delete] PDF file removed | txn_id={txn_id} | path={stored}")
                             except OSError as e:
                                 print(f"[Delete][WARN] Could not remove PDF file | txn_id={txn_id} | reason={str(e)}")
                                 errors.append({"txn_id": txn_id, "error": f"PDF delete error: {str(e)}"})

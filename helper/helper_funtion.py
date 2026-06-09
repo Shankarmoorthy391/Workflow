@@ -1,7 +1,7 @@
 import httpx
 import os
 from typing import Dict, Any
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from dotenv import load_dotenv
 load_dotenv()
 import json
@@ -9,6 +9,27 @@ from sqlalchemy import text
 from Config.database import get_async_db
 
 class HelperFunctionController:
+
+    @staticmethod
+    async def get_user_details(request: Request) -> dict:
+        """Fetch user details (including tenant schema) from the auth API."""
+        url = f"{os.getenv('BASE_URL')}/api/user-details/"
+        auth = request.headers.get("Authorization", "")
+        headers = {"Authorization": auth} if auth else {}
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            body = response.json()
+            return body.get("data") or {}
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error fetching user details: {e.response.status_code} - {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="User details API timed out")
+        except Exception as e:
+            print(f"Unexpected error fetching user details: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     @staticmethod
     async def create_job(Request,payload: dict) -> Dict[str, Any]:
