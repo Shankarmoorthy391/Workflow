@@ -1,0 +1,29 @@
+-- OPTIONAL (DBA): Update tv_api_payload so housing_details[] follows HBL upload order.
+-- Apply after 001_add_file_sequence.sql. Adjust to match your existing view definition.
+--
+-- Intent: for each txn_id, collect HBL rows ordered by file_sequence and merge
+-- each row's extracted_data->'data'->'housing_details' into one array.
+
+-- Example pattern (pseudo — replace with your full view body):
+--
+-- hbl_ordered AS (
+--   SELECT
+--     p.txn_id,
+--     p.file_sequence,
+--     p.extracted_data
+--   FROM public.pdf_uploads p
+--   WHERE p.file_type = 'hbl'
+--     AND p.status = 'done'
+-- ),
+-- housing_merged AS (
+--   SELECT
+--     txn_id,
+--     jsonb_agg(elem ORDER BY file_sequence) AS housing_details
+--   FROM hbl_ordered h
+--   CROSS JOIN LATERAL jsonb_array_elements(
+--     COALESCE(h.extracted_data->'data'->'housing_details', '[]'::jsonb)
+--   ) AS elem
+--   GROUP BY txn_id
+-- )
+--
+-- Then join housing_merged.housing_details into the MBL api_payload JSON.

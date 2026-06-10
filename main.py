@@ -118,31 +118,97 @@ def format_ts(ts):
     return ts.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _fetch_txn_file_urls(txn_ids: List[str]) -> dict:
-    """Return {txn_id: {"hbl": url, "mbl": url}} from pdf_uploads."""
+def _parse_extracted_data(ed) -> dict:
+    if not ed:
+        return {}
+    if isinstance(ed, str):
+        try:
+            ed = json.loads(ed)
+        except json.JSONDecodeError:
+            return {}
+    return ed if isinstance(ed, dict) else {}
+
+
+def _hbl_number_from_extracted(ed) -> Optional[str]:
+    data = _parse_extracted_data(ed).get("data") or {}
+    housing = data.get("housing_details") or []
+    if housing and isinstance(housing[0], dict):
+        num = housing[0].get("hbl_number")
+        if num:
+            return num
+    return data.get("hbl_number") or data.get("document", {}).get("number")
+
+
+def _file_entry_from_row(rec: dict) -> dict:
+    ft = (rec.get("file_type") or "").lower()
+    ed = rec.get("extracted_data")
+    entry = {
+        "sequence":    rec.get("file_sequence") or 1,
+        "filename":    rec.get("filename"),
+        "file_type":   ft,
+        "file_url":    s3_storage.normalize_file_url(rec.get("file_path")),
+        "status":      rec.get("status"),
+        "size_kb":     rec.get("size_kb"),
+    }
+    if ft == "hbl":
+        entry["hbl_number"] = _hbl_number_from_extracted(ed)
+    elif ft == "mbl":
+        data = _parse_extracted_data(ed).get("data") or {}
+        entry["mbl_number"] = data.get("mbl_number") or data.get("bl_number")
+    return entry
+
+
+def _fetch_txn_file_meta(txn_ids: List[str]) -> dict:
+    """Return {txn_id: {mbl_file_url, mbl_files, hbl_files, hbl_count, hbl_file_url}}."""
     if not txn_ids:
         return {}
-    url_map = {}
+    meta_map = {}
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT txn_id, file_type, file_path FROM public.pdf_uploads WHERE txn_id = ANY(%s)",
+                """
+                SELECT txn_id, file_type, file_sequence, filename, file_path,
+                       status, size_kb, extracted_data
+                FROM public.pdf_uploads
+                WHERE txn_id = ANY(%s)
+                ORDER BY txn_id,
+                         CASE file_type WHEN 'mbl' THEN 0 ELSE 1 END,
+                         file_sequence NULLS LAST,
+                         uploaded_at
+                """,
                 (txn_ids,),
             )
             for rec in cur.fetchall():
                 txn = rec["txn_id"]
                 ft = (rec["file_type"] or "").lower()
-                url = s3_storage.normalize_file_url(rec["file_path"])
-                if url:
-                    url_map.setdefault(txn, {})[ft] = url
-    return url_map
+                entry = _file_entry_from_row(rec)
+                bucket = meta_map.setdefault(txn, {
+                    "mbl_file_url": None,
+                    "mbl_files": [],
+                    "hbl_files": [],
+                    "hbl_count": 0,
+                    "hbl_file_url": None,
+                })
+                if ft == "mbl":
+                    bucket["mbl_files"].append(entry)
+                    if entry.get("file_url"):
+                        bucket["mbl_file_url"] = entry["file_url"]
+                elif ft == "hbl":
+                    bucket["hbl_files"].append(entry)
+                    if entry.get("file_url") and not bucket["hbl_file_url"]:
+                        bucket["hbl_file_url"] = entry["file_url"]
+                bucket["hbl_count"] = len(bucket["hbl_files"])
+    return meta_map
 
 
-def _apply_file_urls(row: dict, url_map: dict) -> dict:
+def _apply_file_urls(row: dict, meta_map: dict) -> dict:
     r = dict(row)
-    urls = url_map.get(r.get("txn_id"), {})
-    r["hbl_file_url"] = urls.get("hbl")
-    r["mbl_file_url"] = urls.get("mbl")
+    meta = meta_map.get(r.get("txn_id"), {})
+    r["mbl_file_url"] = meta.get("mbl_file_url")
+    r["hbl_files"] = meta.get("hbl_files", [])
+    r["hbl_count"] = meta.get("hbl_count", 0)
+    r["mbl_files"] = meta.get("mbl_files", [])
+    r["hbl_file_url"] = meta.get("hbl_file_url")
     r["file_url"] = (
         r.get("mbl_file_url")
         or r.get("hbl_file_url")
@@ -368,8 +434,18 @@ async def upload_pdfs(
         [(file, "mbl") for file in mbl_attachments]
     )
 
+    hbl_sequence = 0
+    mbl_sequence = 0
+
     for file, pdf_type in tagged_files:
-        print(f"[Upload] Processing file | txn_id={txn_id} | filename={file.filename} | pdf_type={pdf_type}")
+        if pdf_type == "hbl":
+            hbl_sequence += 1
+            file_sequence = hbl_sequence
+        else:
+            mbl_sequence += 1
+            file_sequence = mbl_sequence
+
+        print(f"[Upload] Processing file | txn_id={txn_id} | filename={file.filename} | pdf_type={pdf_type} | sequence={file_sequence}")
 
         # Validate file type
         # if not file.filename.lower().endswith(".pdf"):
@@ -420,9 +496,9 @@ async def upload_pdfs(
                 with conn.cursor() as cur:
                     cur.execute("""
                         INSERT INTO public.pdf_uploads
-                            (txn_id, filename, file_path, size_kb, file_type, status, branch_id, created_by)
-                        VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s)
-                    """, (txn_id, file.filename, db_file_path, size_kb, pdf_type, branch_id, created_by))
+                            (txn_id, filename, file_path, size_kb, file_type, file_sequence, status, branch_id, created_by)
+                        VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, %s)
+                    """, (txn_id, file.filename, db_file_path, size_kb, pdf_type, file_sequence, branch_id, created_by))
                 conn.commit()
             print(f"[Upload] DB record inserted | txn_id={txn_id} | filename={file.filename} | pdf_type={pdf_type}")
         except psycopg2.IntegrityError as e:
@@ -472,14 +548,15 @@ async def upload_pdfs(
         print(f"[Upload] Extraction queued | txn_id={txn_id} | filename={file.filename} | pdf_type={pdf_type}")
 
         results.append({
-            "txn_id":    txn_id,
-            "filename":  file.filename,
-            "size_kb":   size_kb,
-            "pdf_type":  pdf_type,
-            "file_type": pdf_type,
-            "file_url":  s3_storage.normalize_file_url(db_file_path),
-            "status":    "pending",
-            "message":   "Uploaded. Claude extraction queued..."
+            "txn_id":        txn_id,
+            "filename":      file.filename,
+            "size_kb":       size_kb,
+            "pdf_type":      pdf_type,
+            "file_type":     pdf_type,
+            "file_sequence": file_sequence,
+            "file_url":      s3_storage.normalize_file_url(db_file_path),
+            "status":        "pending",
+            "message":       "Uploaded. Claude extraction queued..."
         })
 
     print(f"[Upload] Done | txn_id={txn_id} | success={len(results)} | errors={len(errors)}")
@@ -525,8 +602,8 @@ def list_files(request: Request, status: Optional[str] = None, search: Optional[
 
         print(f"[ListFiles] Returned {len(rows)} record(s)")
         txn_ids = list({row["txn_id"] for row in rows if row.get("txn_id")})
-        url_map = _fetch_txn_file_urls(txn_ids)
-        files = [_apply_file_urls(row, url_map) for row in rows]
+        meta_map = _fetch_txn_file_meta(txn_ids)
+        files = [_apply_file_urls(row, meta_map) for row in rows]
         return {"files": files, "total": len(files)}
 
     except psycopg2.Error as e:
@@ -549,7 +626,13 @@ def get_file(txn_id: str):
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT * FROM public.pdf_uploads WHERE txn_id = %s ORDER BY file_type",
+                    """
+                    SELECT * FROM public.pdf_uploads
+                    WHERE txn_id = %s
+                    ORDER BY CASE file_type WHEN 'mbl' THEN 0 ELSE 1 END,
+                             file_sequence NULLS LAST,
+                             uploaded_at
+                    """,
                     (txn_id,),
                 )
                 rows = cur.fetchall()
@@ -560,9 +643,9 @@ def get_file(txn_id: str):
 
         row = next((r for r in rows if r["file_type"] == "mbl"), rows[0])
         result = row_to_dict(row)
-        url_map = _fetch_txn_file_urls([txn_id])
-        result = _apply_file_urls(result, url_map)
-        ed = row["extracted_data"] or {}
+        meta_map = _fetch_txn_file_meta([txn_id])
+        result = _apply_file_urls(result, meta_map)
+        ed = _parse_extracted_data(row.get("extracted_data"))
         result["extracted_data"] = ed.get("data")
         print(f"[GetFile] Record found | txn_id={txn_id} | status={row['status']}")
         return result
