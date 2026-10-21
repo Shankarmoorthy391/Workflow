@@ -805,6 +805,95 @@ def delete_files(txn_ids: List[str]):
     return {"deleted": deleted, "errors": errors}
 
 
+# ── Patch payload (booking mapping + housing edits) ───────────────────────────
+
+@app.patch("/workflow/files/{txn_id}/payload")
+async def patch_file_payload(txn_id: str, Request: Request):
+    """
+    Persist Form View edits onto HBL extracted_data so tv_api_payload picks them up.
+    Especially: housing_details[].booking_id / booking_shipment_code.
+    """
+    try:
+        body = await Request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    housing = body.get("housing_details") if isinstance(body, dict) else None
+    if not isinstance(housing, list):
+        raise HTTPException(status_code=400, detail="housing_details array required")
+
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, extracted_data
+                    FROM public.pdf_uploads
+                    WHERE txn_id = %s AND file_type = 'hbl'
+                    ORDER BY file_sequence NULLS LAST, uploaded_at, id
+                    """,
+                    (txn_id,),
+                )
+                hbl_rows = cur.fetchall()
+
+                if not hbl_rows:
+                    # Fallback: single-row extract may live on MBL
+                    cur.execute(
+                        """
+                        SELECT id, extracted_data
+                        FROM public.pdf_uploads
+                        WHERE txn_id = %s
+                        ORDER BY CASE file_type WHEN 'mbl' THEN 0 ELSE 1 END, id
+                        LIMIT 1
+                        """,
+                        (txn_id,),
+                    )
+                    hbl_rows = cur.fetchall()
+
+                for i, row in enumerate(hbl_rows):
+                    if i >= len(housing):
+                        break
+                    house = housing[i] if isinstance(housing[i], dict) else {}
+                    ed = row.get("extracted_data") or {}
+                    if isinstance(ed, str):
+                        try:
+                            ed = json.loads(ed)
+                        except Exception:
+                            ed = {}
+                    if not isinstance(ed, dict):
+                        ed = {}
+                    data = ed.get("data") if isinstance(ed.get("data"), dict) else {}
+                    hd_list = data.get("housing_details")
+                    if not isinstance(hd_list, list) or not hd_list:
+                        hd_list = [{}]
+                    first = hd_list[0] if isinstance(hd_list[0], dict) else {}
+                    if "booking_id" in house:
+                        first["booking_id"] = house.get("booking_id")
+                    if "booking_shipment_code" in house:
+                        first["booking_shipment_code"] = house.get("booking_shipment_code")
+                    # Keep other housing keys the Form View may have edited
+                    for k, v in house.items():
+                        if k in ("booking_id", "booking_shipment_code"):
+                            continue
+                        first[k] = v
+                    hd_list[0] = first
+                    data["housing_details"] = hd_list
+                    ed["data"] = data
+                    cur.execute(
+                        "UPDATE public.pdf_uploads SET extracted_data = %s WHERE id = %s",
+                        (json.dumps(ed), row["id"]),
+                    )
+            conn.commit()
+
+        return {"message": "Payload updated", "txn_id": txn_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[PatchPayload][ERROR] txn_id={txn_id} | reason={e}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Start creating jobs ───────────────────────────────────────────────────────
 
 @app.post("/workflow/start_creating_jobs")
@@ -863,12 +952,34 @@ async def process_jobs(data: list, Request):
                     print(f"[Job] Container code lookup | input={cont_type} | found={code}")
                     cont["container_type_input"] = code or cont_type
 
+                # Map each HBL to Booking List (prefer payload booking_id; else match houseno)
+                booking_ids_for_mark = []
+                for ho in api_payload.get("housing_details", []) or []:
+                    if not isinstance(ho, dict):
+                        continue
+                    bid = ho.get("booking_id")
+                    try:
+                        bid = int(bid) if bid not in (None, "") else None
+                    except (TypeError, ValueError):
+                        bid = None
+                    if not bid:
+                        hbl_no = (ho.get("hbl_number") or "").strip()
+                        if hbl_no:
+                            match = await HelperFunctionController.find_import_booking(
+                                Request, houseno=hbl_no
+                            )
+                            if match:
+                                bid = match["id"]
+                                print(f"[Job] Booking matched | hbl={hbl_no} | booking_id={bid}")
+                    # Always set key (even None) so Backend won't mis-pair via booking_ids index
+                    ho["booking_id"] = bid
+                    if bid:
+                        booking_ids_for_mark.append(bid)
+                    # display-only field — strip before Backend serializer
+                    ho.pop("booking_shipment_code", None)
 
-                
-
-
-
-
+                if booking_ids_for_mark:
+                    api_payload["booking_ids"] = booking_ids_for_mark
 
                 await HelperFunctionController.create_job(Request, api_payload)
 

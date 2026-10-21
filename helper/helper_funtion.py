@@ -107,4 +107,89 @@ class HelperFunctionController:
 
      except Exception as e:
         raise Exception(f"Database query failed: {str(e)}")
-    
+
+    @staticmethod
+    async def find_import_booking(
+        Request,
+        *,
+        houseno: str = None,
+        shipment_code: str = None,
+        exact_houseno: bool = True,
+    ) -> Dict[str, Any] | None:
+        """
+        Look up an IMPORT booking (BOOKED/RECEIVED) by house BL or shipment_code.
+        Returns {id, shipment_code, houseno} or None when zero/ambiguous.
+        """
+        filters: Dict[str, Any] = {
+            "service_type": "IMPORT",
+            "status": ["BOOKED", "RECEIVED"],
+        }
+        if houseno and str(houseno).strip():
+            filters["houseno"] = str(houseno).strip()
+        elif shipment_code and str(shipment_code).strip():
+            filters["shipment_code"] = str(shipment_code).strip()
+        else:
+            return None
+
+        url = f"{os.getenv('BASE_URL')}/api/customer-service-shipment/filter/"
+        token = Request.headers.get("Authorization", "").replace("Bearer ", "")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+                response = await client.post(
+                    url,
+                    json={"filters": filters},
+                    headers=headers,
+                    params={"index": 0, "limit": 20},
+                )
+            response.raise_for_status()
+            body = response.json() if response.content else {}
+            rows = body.get("data") if isinstance(body, dict) else None
+            if not isinstance(rows, list) or not rows:
+                return None
+
+            target = (houseno or "").strip().lower()
+            if exact_houseno and target:
+                exact = [
+                    r
+                    for r in rows
+                    if isinstance(r, dict)
+                    and str(r.get("houseno") or "").strip().lower() == target
+                ]
+                rows = exact if exact else rows
+
+            if len(rows) != 1:
+                # Ambiguous or empty after filter — do not auto-map
+                if len(rows) > 1 and shipment_code:
+                    code = str(shipment_code).strip().lower()
+                    exact_code = [
+                        r
+                        for r in rows
+                        if isinstance(r, dict)
+                        and str(r.get("shipment_code") or "").strip().lower() == code
+                    ]
+                    if len(exact_code) == 1:
+                        rows = exact_code
+                    else:
+                        return None
+                else:
+                    return None
+
+            row = rows[0] if isinstance(rows[0], dict) else None
+            if not row or row.get("id") is None:
+                return None
+            try:
+                bid = int(row["id"])
+            except (TypeError, ValueError):
+                return None
+            return {
+                "id": bid,
+                "shipment_code": str(row.get("shipment_code") or ""),
+                "houseno": str(row.get("houseno") or ""),
+            }
+        except Exception as e:
+            print(f"[BookingLookup] Failed | houseno={houseno} | shipment_code={shipment_code} | reason={e}")
+            return None
