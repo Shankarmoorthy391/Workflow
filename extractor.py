@@ -867,20 +867,59 @@ Return ONLY one blocks, no additional prose:
             "$ref": "#/definitions/CargoDetail"
           }
         },
-        # "mbl_charges": {
-        #   "type": "array",
-        #   "description": "Charge line items associated with this HBL",
-        #   "items": {
-        #     "$ref": "#/definitions/MblCharge"
-        #   }
-        # },
-        # "events": {
-        #   "type": "array",
-        #   "description": "Shipment milestone events for this HBL",
-        #   "items": {
-        #     "$ref": "#/definitions/ShipmentEvent"
-        #   }
-        # }
+        "mbl_charges": {
+          "type": "array",
+          "description": "Charge line items associated with this HBL if printed on the document. Omit if none.",
+          "items": {
+            "$ref": "#/definitions/MblCharge"
+          }
+        }
+      },
+      "additionalProperties": False
+    },
+
+    "MblCharge": {
+      "type": "object",
+      "description": "Charge line item extracted from HBL (names/amounts as printed; IDs optional)",
+      "properties": {
+        "charge_name": {
+          "type": "string",
+          "description": "Charge name as printed on the document",
+          "examples": ["Ocean Freight", "THC"]
+        },
+        "charge_id": {
+          "type": ["integer", "string", "null"],
+          "description": "Charge type id if known; otherwise null"
+        },
+        "pp_cc": {
+          "type": "string",
+          "description": "Prepaid or Collect indicator",
+          "examples": ["Prepaid", "Collect", "PP", "CC"]
+        },
+        "no_of_unit": {
+          "type": ["number", "string", "null"],
+          "description": "Number of units"
+        },
+        "amount_per_unit": {
+          "type": ["number", "string", "null"],
+          "description": "Amount per unit"
+        },
+        "amount": {
+          "type": ["number", "string", "null"],
+          "description": "Total charge amount"
+        },
+        "roe": {
+          "type": ["number", "string", "null"],
+          "description": "Rate of exchange"
+        },
+        "sell_local_amount": {
+          "type": ["number", "string", "null"],
+          "description": "Amount in local currency"
+        },
+        "currency_code": {
+          "type": "string",
+          "description": "Currency code as printed (e.g. USD, INR)"
+        }
       },
       "additionalProperties": False
     },

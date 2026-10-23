@@ -251,13 +251,27 @@ def row_to_dict(row: dict) -> dict:
 # Background extraction task
 # ---------------------------------------------------------------------------
 
-async def run_extraction(txn_id: str, pdf_path: str, filename: str, pdf_type: str = "hbl"):
+class _AuthHeaderRequest:
+    """Minimal stand-in for FastAPI Request so background tasks can call booking APIs."""
+
+    def __init__(self, authorization: str = ""):
+        self.headers = {"Authorization": authorization or ""}
+
+
+async def run_extraction(
+    txn_id: str,
+    pdf_path: str,
+    filename: str,
+    pdf_type: str = "hbl",
+    auth_header: str = "",
+):
     """
     Async background task:
       1. Mark status = processing  (scoped to txn_id + file_type)
       2. Call HBLExtractor.extract() with correct pdf_type
-      3. Save JSON file to extracted/
-      4. Update DB with result or error (scoped to txn_id + file_type)
+      3. For HBL: enrich housing with booking_id + booking_shipment_code when matched
+      4. Save JSON file to extracted/
+      5. Update DB with result or error (scoped to txn_id + file_type)
     """
     print(f"[Task] Extraction started | txn_id={txn_id} | file={filename} | pdf_type={pdf_type}")
 
@@ -324,6 +338,25 @@ async def run_extraction(txn_id: str, pdf_path: str, filename: str, pdf_type: st
             print(f"[Task][WARN] Unexpected error saving JSON | txn_id={txn_id} | pdf_type={pdf_type} | reason={str(e)}")
             print(traceback.format_exc())
             json_path = None
+
+        # ── HBL: persist booking_id + shipment_code (+ exclusive charges) ─────
+        extracted_data = result.get("extracted_data")
+        if (
+            pdf_type == "hbl"
+            and auth_header
+            and isinstance(extracted_data, dict)
+        ):
+            try:
+                extracted_data = await HelperFunctionController.enrich_extracted_housing_booking(
+                    _AuthHeaderRequest(auth_header),
+                    extracted_data,
+                )
+                result["extracted_data"] = extracted_data
+            except Exception as e:
+                print(
+                    f"[Task][WARN] Booking enrich skipped | txn_id={txn_id} | "
+                    f"file={filename} | reason={e}"
+                )
 
         # ── Build JSONB payload ────────────────────────────────────────────────
         stored_json = {
@@ -544,7 +577,15 @@ async def upload_pdfs(
                 pass
             continue
 
-        background_tasks.add_task(run_extraction, txn_id, local_path, file.filename, pdf_type)
+        auth_header = request.headers.get("Authorization", "") or ""
+        background_tasks.add_task(
+            run_extraction,
+            txn_id,
+            local_path,
+            file.filename,
+            pdf_type,
+            auth_header,
+        )
         print(f"[Upload] Extraction queued | txn_id={txn_id} | filename={file.filename} | pdf_type={pdf_type}")
 
         results.append({
@@ -952,11 +993,14 @@ async def process_jobs(data: list, Request):
                     print(f"[Job] Container code lookup | input={cont_type} | found={code}")
                     cont["container_type_input"] = code or cont_type
 
-                # Map each HBL to Booking List (prefer payload booking_id; else match houseno)
+                # Map each HBL → booking (BOOKED/RECEIVED); merge booking-over-extract
+                # before create (same priority as Form View / extract enrich).
                 booking_ids_for_mark = []
-                for ho in api_payload.get("housing_details", []) or []:
+                housing_list = api_payload.get("housing_details") or []
+                for i, ho in enumerate(housing_list):
                     if not isinstance(ho, dict):
                         continue
+                    extract_charges = ho.get("mbl_charges")
                     bid = ho.get("booking_id")
                     try:
                         bid = int(bid) if bid not in (None, "") else None
@@ -970,14 +1014,39 @@ async def process_jobs(data: list, Request):
                             )
                             if match:
                                 bid = match["id"]
-                                print(f"[Job] Booking matched | hbl={hbl_no} | booking_id={bid}")
-                    # Always set key (even None) so Backend won't mis-pair via booking_ids index
-                    ho["booking_id"] = bid
+                                print(
+                                    f"[Job] Booking matched | hbl={hbl_no} | booking_id={bid}"
+                                )
                     if bid:
                         booking_ids_for_mark.append(bid)
-                    # display-only field — strip before Backend serializer
-                    ho.pop("booking_shipment_code", None)
+                        full = await HelperFunctionController.get_import_booking_by_id(
+                            Request, bid
+                        )
+                        if isinstance(full, dict):
+                            merged = (
+                                HelperFunctionController.merge_import_housing_from_booking(
+                                    ho, full
+                                )
+                            )
+                            housing_list[i] = merged
+                            print(
+                                f"[Job] Housing merged from booking | booking_id={bid} | "
+                                f"charges={len(merged.get('mbl_charges') or [])}"
+                            )
+                        else:
+                            # Keep payload house; stamp booking_id; exclusive empty charges
+                            ho["booking_id"] = bid
+                            ho["mbl_charges"] = []
+                    else:
+                        # Always set key (even None) so Backend won't mis-pair via booking_ids
+                        ho["booking_id"] = None
+                        if extract_charges is not None:
+                            ho["mbl_charges"] = extract_charges
+                    HelperFunctionController.strip_housing_display_only_fields(
+                        housing_list[i] if isinstance(housing_list[i], dict) else ho
+                    )
 
+                api_payload["housing_details"] = housing_list
                 if booking_ids_for_mark:
                     api_payload["booking_ids"] = booking_ids_for_mark
 
