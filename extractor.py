@@ -975,6 +975,12 @@ Return ONLY one blocks, no additional prose:
           "description": "Whether the cargo is hazardous. Use false if not found.",
           "default": False,
           "examples": [False, True]
+        },
+        "package_type": {
+          "type": "string",
+          "description": "Package type code or name as printed on the document (e.g. PKG, CTN, CARTONS). Use empty string if not found.",
+          "default": "",
+          "examples": ["PKG", "CTN", "CARTONS"]
         }
       },
       "additionalProperties": False

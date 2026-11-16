@@ -32,6 +32,65 @@ class HelperFunctionController:
             raise HTTPException(status_code=500, detail=str(e))
 
     @staticmethod
+    def extract_job_id_from_response(response: Dict[str, Any] | None) -> int | None:
+        """Pull job_details_id / id from POST /api/job-create/ success body."""
+        if not isinstance(response, dict):
+            return None
+        data = response.get("data") if isinstance(response.get("data"), dict) else response
+        if not isinstance(data, dict):
+            return None
+        for key in ("job_details_id", "id", "job_id"):
+            raw = data.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                n = int(raw)
+                if n > 0:
+                    return n
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def resolve_automation_owner_from_details(user_details: dict | None) -> dict:
+        """
+        Normalize /api/user-details/ for automation ownership stamping + list filters.
+        created_by_id = UserMaster PK; branch/company from is_default branch.
+        """
+        details = user_details if isinstance(user_details, dict) else {}
+        created_by_id = details.get("usermaster_id")
+        if created_by_id is None:
+            created_by_id = details.get("user_id")
+        try:
+            created_by_id = int(created_by_id) if created_by_id is not None else None
+        except (TypeError, ValueError):
+            created_by_id = None
+        branch_code = str(details.get("branch_code") or "").strip() or None
+        company_code = str(details.get("company_code") or "").strip() or None
+        country_branch_codes = [
+            str(c).strip()
+            for c in (details.get("country_branch_codes") or [])
+            if str(c).strip()
+        ]
+        is_admin = bool(details.get("is_staff")) or str(
+            details.get("role") or ""
+        ).strip().lower() == "admin"
+        display_name = (
+            str(details.get("full_name") or "").strip()
+            or str(details.get("email") or "").strip()
+            or "unknown"
+        )
+        return {
+            "created_by_id": created_by_id,
+            "branch_code": branch_code,
+            "company_code": company_code,
+            "country_branch_codes": country_branch_codes,
+            "is_admin": is_admin,
+            "display_name": display_name,
+            "active_branch_id": details.get("active_branch_id"),
+        }
+
+    @staticmethod
     async def create_job(Request,payload: dict) -> Dict[str, Any]:
         """
         Hits the Job Creation API via POST request.
@@ -50,6 +109,9 @@ class HelperFunctionController:
         "Content-Type": "application/json",
         "Authorization": f'Bearer {token}'
     }
+        # Mark job as automation-created (job_details.is_automated)
+        if isinstance(payload, dict):
+            payload = {**payload, "is_automated": True}
         print("PAYLOAD TYPE:", type(payload))  # must be <class 'dict'>
         print("PAYLOAD KEYS:", payload.keys())
         print("SERIALIZED:", json.dumps(payload, indent=2)) 
@@ -335,6 +397,37 @@ class HelperFunctionController:
             return True
         return False
 
+    # Cargo measure keys: treat 0 / "0.00" as empty so extract can fill booking placeholders.
+    _CARGO_PLACEHOLDER_KEYS = frozenset({
+        "gross_weight",
+        "gross_weight_kgs",
+        "volume",
+        "volume_cbm",
+        "chargeable_weight",
+        "no_of_packages",
+        "packages",
+        "no_of_containers",
+    })
+
+    @staticmethod
+    def _is_empty_cargo_scalar(v) -> bool:
+        """Like _is_empty_merge_value, plus numeric/string zero placeholders for cargo measures."""
+        if HelperFunctionController._is_empty_merge_value(v):
+            return True
+        if isinstance(v, bool):
+            return False
+        if isinstance(v, (int, float)) and v == 0:
+            return True
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return True
+            try:
+                return float(s) == 0.0
+            except (TypeError, ValueError):
+                return False
+        return False
+
     @staticmethod
     def _first_nonempty(*vals):
         for v in vals:
@@ -376,7 +469,7 @@ class HelperFunctionController:
     @staticmethod
     def _cargo_scalar(*vals):
         for v in vals:
-            if HelperFunctionController._is_empty_merge_value(v):
+            if HelperFunctionController._is_empty_cargo_scalar(v):
                 continue
             return v
         return None
@@ -648,7 +741,12 @@ class HelperFunctionController:
             e_row = extract[e_idx] if e_idx >= 0 else {}
             merged = dict(e_row)
             for k, v in b_row.items():
-                if not HelperFunctionController._is_empty_merge_value(v):
+                empty = (
+                    HelperFunctionController._is_empty_cargo_scalar(v)
+                    if k in HelperFunctionController._CARGO_PLACEHOLDER_KEYS
+                    else HelperFunctionController._is_empty_merge_value(v)
+                )
+                if not empty:
                     merged[k] = v
             result.append(HelperFunctionController._normalize_house_cargo_row(merged))
         for idx, e in enumerate(extract):

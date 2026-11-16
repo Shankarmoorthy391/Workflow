@@ -438,15 +438,25 @@ async def upload_pdfs(
     print(f"[Upload] Received {len(hbl_attachments)} HBL + {len(mbl_attachments)} MBL file(s)")
     claims     = _token_payload(request)
     branch_id  = claims.get("branchId") or claims.get("branch_id")
-    created_by = claims.get("user_id") or claims.get("userId") or claims.get("username") or "unknown"
     schema_name = claims.get("schema") or "public"
+    created_by_id = None
+    branch_code = None
+    company_code = None
+
+    # Ownership from is_default branch (UserMaster PK + branch/company codes)
+    try:
+        user_data = await HelperFunctionController.get_user_details(request)
+    except Exception:
+        user_data = {}
+    owner = HelperFunctionController.resolve_automation_owner_from_details(user_data)
+    created_by_id = owner.get("created_by_id")
+    branch_code = owner.get("branch_code")
+    company_code = owner.get("company_code")
+    if not branch_id and owner.get("active_branch_id") is not None:
+        branch_id = owner["active_branch_id"]
+    schema_name = (user_data or {}).get("schema") or schema_name
 
     if s3_storage.USE_S3:
-        if not claims.get("schema"):
-            user_data = await HelperFunctionController.get_user_details(request)
-            schema_name = user_data.get("schema") or schema_name
-            if not branch_id:
-                branch_id = user_data.get("active_branch_id")
         print(f"[Upload] S3 enabled | schema={schema_name} | branch_id={branch_id}")
 
     if not hbl_attachments and not mbl_attachments:
@@ -524,16 +534,24 @@ async def upload_pdfs(
             continue
 
         # Insert DB record — all rows share the same txn_id
+        # created_by_id = UserMaster PK; branch_code / company_code from is_default branch
         try:
             with get_db() as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
                         INSERT INTO public.pdf_uploads
-                            (txn_id, filename, file_path, size_kb, file_type, file_sequence, status, branch_id, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, %s)
-                    """, (txn_id, file.filename, db_file_path, size_kb, pdf_type, file_sequence, branch_id, created_by))
+                            (txn_id, filename, file_path, size_kb, file_type, file_sequence, status,
+                             branch_id, created_by_id, branch_code, company_code)
+                        VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s)
+                    """, (
+                        txn_id, file.filename, db_file_path, size_kb, pdf_type, file_sequence,
+                        branch_id, created_by_id, branch_code, company_code,
+                    ))
                 conn.commit()
-            print(f"[Upload] DB record inserted | txn_id={txn_id} | filename={file.filename} | pdf_type={pdf_type}")
+            print(
+                f"[Upload] DB record inserted | txn_id={txn_id} | filename={file.filename} | "
+                f"pdf_type={pdf_type} | created_by_id={created_by_id} | branch_code={branch_code}"
+            )
         except psycopg2.IntegrityError as e:
             print(f"[Upload][ERROR] DB integrity error | txn_id={txn_id} | reason={str(e)}")
             print(traceback.format_exc())
@@ -612,36 +630,65 @@ async def upload_pdfs(
 # ── List files ────────────────────────────────────────────────────────────────
 
 @app.get("/workflow/files")
-def list_files(request: Request, status: Optional[str] = None, search: Optional[str] = None, branch_id: Optional[str] = None):
+async def list_files(request: Request, status: Optional[str] = None, search: Optional[str] = None, branch_id: Optional[str] = None):
+    """
+    List job automation uploads scoped by ownership:
+      - Normal user: own created_by_id + is_default branch_code
+      - Admin: all uploads whose branch_code is in country of admin's is_default branch
+    Filters via pdf_uploads so tv_upload_list need not expose the new columns.
+    """
     claims = _token_payload(request)
-    # Use branch_id from query param; fall back to JWT claim
-    effective_branch_id = branch_id or claims.get("branchId") or claims.get("branch_id")
-    print(f"[ListFiles] Request | status={status} | search={search} | branch_id={effective_branch_id}")
+    print(f"[ListFiles] Request | status={status} | search={search}")
     try:
-        query  = "SELECT * FROM tv_upload_list"
-        params = []
-        wheres = []
+        try:
+            user_data = await HelperFunctionController.get_user_details(request)
+        except Exception:
+            user_data = {}
+        owner = HelperFunctionController.resolve_automation_owner_from_details(user_data)
 
-        if effective_branch_id:
-            wheres.append("branch_id = %s")
-            params.append(effective_branch_id)
+        query = """
+            SELECT u.*
+            FROM tv_upload_list u
+            WHERE EXISTS (
+                SELECT 1 FROM public.pdf_uploads p
+                WHERE p.txn_id = u.txn_id
+        """
+        params: list = []
+
+        if owner.get("is_admin"):
+            branch_codes = owner.get("country_branch_codes") or []
+            if branch_codes:
+                query += " AND p.branch_code = ANY(%s)"
+                params.append(branch_codes)
+            elif owner.get("company_code"):
+                query += " AND p.company_code = %s"
+                params.append(owner["company_code"])
+            else:
+                # No scope — return empty rather than leaking all tenants
+                return {"files": [], "total": 0}
+        else:
+            if not owner.get("created_by_id") or not owner.get("branch_code"):
+                return {"files": [], "total": 0}
+            query += " AND p.created_by_id = %s AND p.branch_code = %s"
+            params.extend([owner["created_by_id"], owner["branch_code"]])
+
+        query += ")"
+
         if status:
-            wheres.append("status = %s")
+            query += " AND u.status = %s"
             params.append(status)
         if search:
-            wheres.append("(txn_id ILIKE %s OR filename ILIKE %s)")
+            query += " AND (u.txn_id ILIKE %s OR u.filename ILIKE %s)"
             params.extend([f"%{search}%", f"%{search}%"])
-        if wheres:
-            query += " WHERE " + " AND ".join(wheres)
 
-        query += " ORDER BY uploaded_at DESC"
+        query += " ORDER BY u.uploaded_at DESC"
 
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, params)
                 rows = cur.fetchall()
 
-        print(f"[ListFiles] Returned {len(rows)} record(s)")
+        print(f"[ListFiles] Returned {len(rows)} record(s) | admin={owner.get('is_admin')}")
         txn_ids = list({row["txn_id"] for row in rows if row.get("txn_id")})
         meta_map = _fetch_txn_file_meta(txn_ids)
         files = [_apply_file_urls(row, meta_map) for row in rows]
@@ -848,24 +895,81 @@ def delete_files(txn_ids: List[str]):
 
 # ── Patch payload (booking mapping + housing edits) ───────────────────────────
 
+def _parse_upload_extracted(ed) -> dict:
+    if isinstance(ed, str):
+        try:
+            ed = json.loads(ed)
+        except Exception:
+            ed = {}
+    return ed if isinstance(ed, dict) else {}
+
+
 @app.patch("/workflow/files/{txn_id}/payload")
 async def patch_file_payload(txn_id: str, Request: Request):
     """
-    Persist Form View edits onto HBL extracted_data so tv_api_payload picks them up.
-    Especially: housing_details[].booking_id / booking_shipment_code.
+    Persist Form View edits:
+      - Master fields (etd/eta/carrier/ports/containers/…) → MBL extracted_data.data
+      - Housing edits (booking + house fields) → each HBL extracted_data.data.housing_details[0]
     """
     try:
         body = await Request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-    housing = body.get("housing_details") if isinstance(body, dict) else None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="JSON object required")
+
+    housing = body.get("housing_details")
     if not isinstance(housing, list):
         raise HTTPException(status_code=400, detail="housing_details array required")
+
+    # Master-level keys Form View can edit (everything except per-HBL housing / booking_ids)
+    _MASTER_SKIP = {"housing_details", "booking_ids"}
 
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
+                # ── 1) Master fields on MBL (ETD/ETA/carrier/containers/…) ──
+                cur.execute(
+                    """
+                    SELECT id, extracted_data
+                    FROM public.pdf_uploads
+                    WHERE txn_id = %s AND file_type = 'mbl'
+                    ORDER BY id
+                    LIMIT 1
+                    """,
+                    (txn_id,),
+                )
+                mbl_row = cur.fetchone()
+                if not mbl_row:
+                    cur.execute(
+                        """
+                        SELECT id, extracted_data
+                        FROM public.pdf_uploads
+                        WHERE txn_id = %s
+                        ORDER BY CASE file_type WHEN 'mbl' THEN 0 ELSE 1 END, id
+                        LIMIT 1
+                        """,
+                        (txn_id,),
+                    )
+                    mbl_row = cur.fetchone()
+
+                if mbl_row:
+                    ed = _parse_upload_extracted(mbl_row.get("extracted_data"))
+                    data = ed.get("data") if isinstance(ed.get("data"), dict) else {}
+                    for k, v in body.items():
+                        if k in _MASTER_SKIP:
+                            continue
+                        data[k] = v
+                    # Keep a full housing snapshot on MBL for consumers that read it there
+                    data["housing_details"] = housing
+                    ed["data"] = data
+                    cur.execute(
+                        "UPDATE public.pdf_uploads SET extracted_data = %s WHERE id = %s",
+                        (json.dumps(ed), mbl_row["id"]),
+                    )
+
+                # ── 2) Per-HBL housing edits (booking map + house fields) ──
                 cur.execute(
                     """
                     SELECT id, extracted_data
@@ -877,45 +981,17 @@ async def patch_file_payload(txn_id: str, Request: Request):
                 )
                 hbl_rows = cur.fetchall()
 
-                if not hbl_rows:
-                    # Fallback: single-row extract may live on MBL
-                    cur.execute(
-                        """
-                        SELECT id, extracted_data
-                        FROM public.pdf_uploads
-                        WHERE txn_id = %s
-                        ORDER BY CASE file_type WHEN 'mbl' THEN 0 ELSE 1 END, id
-                        LIMIT 1
-                        """,
-                        (txn_id,),
-                    )
-                    hbl_rows = cur.fetchall()
-
                 for i, row in enumerate(hbl_rows):
                     if i >= len(housing):
                         break
                     house = housing[i] if isinstance(housing[i], dict) else {}
-                    ed = row.get("extracted_data") or {}
-                    if isinstance(ed, str):
-                        try:
-                            ed = json.loads(ed)
-                        except Exception:
-                            ed = {}
-                    if not isinstance(ed, dict):
-                        ed = {}
+                    ed = _parse_upload_extracted(row.get("extracted_data"))
                     data = ed.get("data") if isinstance(ed.get("data"), dict) else {}
                     hd_list = data.get("housing_details")
                     if not isinstance(hd_list, list) or not hd_list:
                         hd_list = [{}]
                     first = hd_list[0] if isinstance(hd_list[0], dict) else {}
-                    if "booking_id" in house:
-                        first["booking_id"] = house.get("booking_id")
-                    if "booking_shipment_code" in house:
-                        first["booking_shipment_code"] = house.get("booking_shipment_code")
-                    # Keep other housing keys the Form View may have edited
                     for k, v in house.items():
-                        if k in ("booking_id", "booking_shipment_code"):
-                            continue
                         first[k] = v
                     hd_list[0] = first
                     data["housing_details"] = hd_list
@@ -1050,20 +1126,38 @@ async def process_jobs(data: list, Request):
                 if booking_ids_for_mark:
                     api_payload["booking_ids"] = booking_ids_for_mark
 
-                await HelperFunctionController.create_job(Request, api_payload)
+                create_resp = await HelperFunctionController.create_job(Request, api_payload)
+                job_id = HelperFunctionController.extract_job_id_from_response(create_resp)
+                print(f"[Job] Created | txn_id={txn_id} | job_id={job_id}")
+
+            else:
+                job_id = None
 
             with get_db() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE public.pdf_uploads
-                        SET status = 'job_created', processed_at = NOW(),final_status = 'JOB_CREATED'
-                        WHERE txn_id = %s
-                        """,
-                        (txn_id,)
-                    )
+                    if job_id:
+                        cur.execute(
+                            """
+                            UPDATE public.pdf_uploads
+                            SET status = 'job_created',
+                                processed_at = NOW(),
+                                final_status = 'JOB_CREATED',
+                                job_id = %s
+                            WHERE txn_id = %s
+                            """,
+                            (job_id, txn_id),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            UPDATE public.pdf_uploads
+                            SET status = 'job_created', processed_at = NOW(), final_status = 'JOB_CREATED'
+                            WHERE txn_id = %s
+                            """,
+                            (txn_id,),
+                        )
                 conn.commit()
-            print(f"[Job] Status set to job_created | mbl_id={mbl_id} | txn_id={txn_id}")
+            print(f"[Job] Status set to job_created | mbl_id={mbl_id} | txn_id={txn_id} | job_id={job_id}")
 
         except Exception as e:
             print(f"[Job][ERROR] Job creation failed | mbl_id={mbl_id} | txn_id={txn_id} | reason={e}")
