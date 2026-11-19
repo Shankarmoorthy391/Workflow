@@ -976,6 +976,24 @@ Return ONLY one blocks, no additional prose:
           "default": False,
           "examples": [False, True]
         },
+        "un_no": {
+          "type": "string",
+          "description": "UN number for hazardous cargo as printed. Use empty string if not found or not hazardous.",
+          "default": "",
+          "examples": ["1203", ""]
+        },
+        "class_name": {
+          "type": "string",
+          "description": "Hazard class for hazardous cargo as printed. Use empty string if not found or not hazardous.",
+          "default": "",
+          "examples": ["3", ""]
+        },
+        "pkg_group": {
+          "type": "string",
+          "description": "Packing group for hazardous cargo as printed (e.g. I, II, III). Use empty string if not found or not hazardous.",
+          "default": "",
+          "examples": ["II", ""]
+        },
         "package_type": {
           "type": "string",
           "description": "Package type code or name as printed on the document (e.g. PKG, CTN, CARTONS). Use empty string if not found.",

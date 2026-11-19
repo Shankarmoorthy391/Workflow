@@ -530,6 +530,67 @@ class HelperFunctionController:
             row.get("chargeable_weight")
         ) or ""
         out["haz"] = bool(row.get("haz"))
+        un_no = str(row.get("un_no") or "").strip()
+        class_name = str(row.get("class_name") or "").strip()
+        pkg_group = str(row.get("pkg_group") or "").strip()
+        if un_no:
+            out["un_no"] = un_no
+        else:
+            out.pop("un_no", None)
+        if class_name:
+            out["class_name"] = class_name
+        else:
+            out.pop("class_name", None)
+        if pkg_group:
+            out["pkg_group"] = pkg_group
+        else:
+            out.pop("pkg_group", None)
+        return out
+
+    @staticmethod
+    def _pick_complete_haz_details(rows: list) -> dict | None:
+        """Return UN/Class/PKG when a haz=True row has all three (BE create-job contract)."""
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("haz"):
+                continue
+            un_no = str(row.get("un_no") or "").strip()
+            class_name = str(row.get("class_name") or "").strip()
+            pkg_group = str(row.get("pkg_group") or "").strip()
+            if un_no and class_name and pkg_group:
+                return {
+                    "un_no": un_no,
+                    "class_name": class_name,
+                    "pkg_group": pkg_group,
+                }
+        return None
+
+    @staticmethod
+    def _enrich_incomplete_haz_cargo_rows(rows: list, haz_source: list) -> list:
+        """Fill missing UN/Class/PKG on haz rows from booking cargo with complete haz."""
+        details = HelperFunctionController._pick_complete_haz_details(haz_source)
+        if not details:
+            return rows
+        out = []
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("haz"):
+                out.append(row)
+                continue
+            un_no = str(row.get("un_no") or "").strip()
+            class_name = str(row.get("class_name") or "").strip()
+            pkg_group = str(row.get("pkg_group") or "").strip()
+            if un_no and class_name and pkg_group:
+                out.append(row)
+                continue
+            out.append(
+                HelperFunctionController._normalize_house_cargo_row(
+                    {
+                        **row,
+                        "un_no": un_no or details["un_no"],
+                        "class_name": class_name or details["class_name"],
+                        "pkg_group": pkg_group or details["pkg_group"],
+                    }
+                )
+            )
         return out
 
     @staticmethod
@@ -752,7 +813,8 @@ class HelperFunctionController:
         for idx, e in enumerate(extract):
             if idx not in used:
                 result.append(e)
-        return result
+        # Leftover extract haz rows may lack UN/Class/PKG — fill from booking when complete
+        return HelperFunctionController._enrich_incomplete_haz_cargo_rows(result, booking)
 
     @staticmethod
     def build_ocean_housing_fields_from_booking(booking: dict) -> dict:
